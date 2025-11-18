@@ -92,17 +92,20 @@ app.use('/api/odontograma/:id', async (req, res, next) => {
   }
   next();
 });
-// Quick existence check for patient account (nro_cuenta) via Atenciones/Pacientes
+
+
+// Quick existence check for patient account (nro_cuenta) - Busca en Atenciones O Pacientes
 app.get('/api/cuenta/:nroCuenta/existe', async (req, res) => {
   try {
     await initDb();
     const nroCuenta = parseInt(req.params.nroCuenta, 10);
     if (!nroCuenta) return res.status(400).json({ error: 'nroCuenta inválido' });
 
-    // Buscar la atención concreta y datos del paciente
     const r = pool.request();
     r.input('nro', sql.Int, nroCuenta);
-    const detalle = await r.query(`
+
+    // Primero: Buscar en Atenciones (caso normal: nroCuenta = IdAtencion)
+    const atencionResult = await r.query(`
       SELECT TOP 1 
         a.IdAtencion AS NroCuenta,
         p.NroDocumento,
@@ -113,16 +116,56 @@ app.get('/api/cuenta/:nroCuenta/existe', async (req, res) => {
             ISNULL(p.PrimerNombre,''), ' ',
             ISNULL(p.SegundoNombre,'')
           )
-        )) AS NombresPaciente
+        )) AS NombresPaciente,
+        h.NroHistoriaClinica
       FROM dbo.Atenciones a
       LEFT JOIN dbo.Pacientes p ON p.IdPaciente = a.IdPaciente
+      LEFT JOIN dbo.HistoriasClinicas h ON h.NroHistoriaClinica = p.NroHistoriaClinica
       WHERE a.IdAtencion = @nro
-      ORDER BY a.IdAtencion DESC
     `);
 
-    const paciente = detalle.recordset && detalle.recordset[0] ? detalle.recordset[0] : null;
-    const exists = !!paciente;
-    const source = 'Atenciones';
+    let paciente = atencionResult.recordset && atencionResult.recordset[0] ? atencionResult.recordset[0] : null;
+    let source = 'Atenciones';
+    let exists = !!paciente;
+
+    // Si NO existe en Atenciones, buscar en Pacientes directamente (nroCuenta = IdPaciente)
+    if (!exists) {
+      const pacienteResult = await pool.request()
+        .input('nro', sql.Int, nroCuenta)
+        .query(`
+          SELECT TOP 1 
+            p.IdPaciente AS NroCuenta,
+            p.NroDocumento,
+            LTRIM(RTRIM(
+              CONCAT(
+                ISNULL(p.ApellidoPaterno,''), ' ',
+                ISNULL(p.ApellidoMaterno,''), ' ',
+                ISNULL(p.PrimerNombre,''), ' ',
+                ISNULL(p.SegundoNombre,'')
+              )
+            )) AS NombresPaciente,
+            h.NroHistoriaClinica
+          FROM dbo.Pacientes p
+          LEFT JOIN dbo.HistoriasClinicas h ON h.NroHistoriaClinica = p.NroHistoriaClinica
+          WHERE p.IdPaciente = @nro
+        `);
+      
+      paciente = pacienteResult.recordset && pacienteResult.recordset[0] ? pacienteResult.recordset[0] : null;
+      source = 'Pacientes';
+      exists = !!paciente;
+    }
+
+    // Si aún no existe, retornar false
+    if (!exists) {
+      return res.json({ 
+        exists: false, 
+        source: null, 
+        paciente: null, 
+        odontogramasCount: 0, 
+        latestOdontogramaId: null, 
+        latestVersionId: null 
+      });
+    }
 
     // Conteo de odontogramas para ese nro_cuenta
     const rs = await pool.request()
@@ -146,7 +189,14 @@ app.get('/api/cuenta/:nroCuenta/existe', async (req, res) => {
       }
     }
 
-    return res.json({ exists, source, paciente, odontogramasCount, latestOdontogramaId, latestVersionId });
+    return res.json({ 
+      exists, 
+      source, 
+      paciente, 
+      odontogramasCount, 
+      latestOdontogramaId, 
+      latestVersionId 
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error verificando nro_cuenta' });
@@ -317,7 +367,7 @@ app.get('/api/version/:versionId/full', async (req, res) => {
     const r = pool.request();
     r.input('vid', sql.Int, versionId);
 
-    const [versionRow, fracturas, espigos, erupciones, extruidas, intrusiones, giroversiones, clavijas, geminaciones, supernumerarios, impactaciones, endodoncias, coronasTemp, restauraciones, fusiones, edentulos, protesisJoin, implantes, aparatosJoin, arcos, lineas, flechas, simbolos, anotaciones, audits] = await Promise.all([
+    const [versionRow, fracturas, espigos, erupciones, extruidas, intrusiones, giroversiones, clavijas, geminaciones, supernumerarios, impactaciones, endodoncias, coronasTemp, coronas, restauraciones, fusiones, edentulos, protesisJoin, implantes, aparatosJoin, aparatosRemovibles, arcos, lineas, flechas, simbolos, anotaciones, audits] = await Promise.all([
       r.query(`SELECT TOP 1 * FROM dbo.OdontogramaVersion WHERE Id = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Fractura WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Espigo WHERE OdontogramaVersionId = @vid`),
@@ -331,12 +381,14 @@ app.get('/api/version/:versionId/full', async (req, res) => {
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Impactacion WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Endodoncia WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.CoronaTemporal WHERE OdontogramaVersionId = @vid`),
+      pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.CoronaV WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Restauracion WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Fusion WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Edentulo WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT p.*, t.NumeroDiente, t.Rol FROM dbo.ProtesisV p LEFT JOIN dbo.ProtesisVTeeth t ON p.Id = t.ProtesisVId WHERE p.OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Implante WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT a.*, d.NumeroDiente, d.Elemento FROM dbo.AparatoFijo a LEFT JOIN dbo.AparatoFijoDiente d ON a.Id = d.AparatoFijoId WHERE a.OdontogramaVersionId = @vid`),
+      pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.AparatoRemovible WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.ArcoOrtodoncia WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Linea WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Flecha WHERE OdontogramaVersionId = @vid`),
@@ -378,12 +430,14 @@ app.get('/api/version/:versionId/full', async (req, res) => {
       impactaciones: impactaciones.recordset || [],
       endodoncias: endodoncias.recordset || [],
       coronasTemporales: coronasTemp.recordset || [],
+      coronas: coronas.recordset || [],
       restauraciones: restauraciones.recordset || [],
       fusiones: fusiones.recordset || [],
       edentulos: edentulos.recordset || [],
       protesis: Object.values(pMap),
       implantes: implantes.recordset || [],
       aparatosFijos: Object.values(aMap),
+      aparatosRemovibles: aparatosRemovibles.recordset || [],
       arcos: arcos.recordset || [],
       lineas: lineas.recordset || [],
       flechas: flechas.recordset || [],
@@ -624,6 +678,11 @@ makePerToothPost('restauracion', 'Restauracion', [
   { name: 'areas', col: 'Areas', body: 'areas', type: sql.NVarChar(200) },
   { name: 'color', col: 'Color', body: 'color', type: sql.NVarChar(30) }
 ]);
+makePerToothPost('corona', 'CoronaV', [
+  { name: 'tipoCodigo', col: 'TipoCodigo', body: 'tipoCodigo', type: sql.NVarChar(50) },
+  { name: 'material', col: 'Material', body: 'material', type: sql.NVarChar(50) },
+  { name: 'color', col: 'Color', body: 'color', type: sql.NVarChar(30) }
+]);
 
 // Dual-tooth/tramo helpers
 app.post('/api/version/:versionId/fusion', async (req, res) => {
@@ -860,6 +919,48 @@ app.delete('/api/version/:versionId/aparato-fijo/:id', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error eliminando AparatoFijo' });
+  }
+});
+
+// Aparatología removible
+app.post('/api/version/:versionId/aparato-removible', async (req, res) => {
+  try {
+    await initDb();
+    const versionId = parseInt(req.params.versionId, 10);
+    const { tipo, posicion = null, dienteInicio = null, dienteFin = null, color = null, usuario = null, metadata = null } = req.body || {};
+    if (!versionId || !tipo) return res.status(400).json({ error: 'missing fields' });
+    const r = pool.request();
+    r.input('vid', sql.Int, versionId);
+    r.input('tipo', sql.NVarChar(50), tipo);
+    r.input('posicion', sql.NVarChar(20), posicion);
+    r.input('dienteInicio', sql.TinyInt, dienteInicio);
+    r.input('dienteFin', sql.TinyInt, dienteFin);
+    r.input('color', sql.NVarChar(30), color);
+    r.input('metadata', sql.NVarChar(sql.MAX), metadata);
+    r.input('usuario', sql.NVarChar(100), usuario);
+    const ins = await r.query(`INSERT INTO dbo.AparatoRemovible (OdontogramaVersionId, Tipo, Posicion, DienteInicio, DienteFin, Color, Metadata, Usuario_Creacion) VALUES (@vid, @tipo, @posicion, @dienteInicio, @dienteFin, @color, @metadata, @usuario); SELECT SCOPE_IDENTITY() AS Id;`);
+    const id = ins.recordset && ins.recordset[0] ? ins.recordset[0].Id : null;
+    await logVersionAudit({ versionId, entidad: 'AparatoRemovible', accion: 'INSERT', clave: `Id=${id}`, detalle: `Tipo=${tipo}`, usuario });
+    res.status(201).json({ id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error creando AparatoRemovible' });
+  }
+});
+
+app.delete('/api/version/:versionId/aparato-removible/:id', async (req, res) => {
+  try {
+    await initDb();
+    const versionId = parseInt(req.params.versionId, 10);
+    const id = parseInt(req.params.id, 10);
+    const r = pool.request();
+    r.input('id', sql.Int, id);
+    await r.query(`DELETE FROM dbo.AparatoRemovible WHERE Id = @id`);
+    await logVersionAudit({ versionId, entidad: 'AparatoRemovible', accion: 'DELETE', clave: `Id=${id}` });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error eliminando AparatoRemovible' });
   }
 });
 
