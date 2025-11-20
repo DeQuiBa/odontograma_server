@@ -452,6 +452,66 @@ app.get('/api/version/:versionId/full', async (req, res) => {
 });
 
 // ==========================
+// Version Snapshot (JSON completo)
+// ==========================
+// POST /api/version/:versionId/snapshot  { data: { ...estadoUI }, usuario }
+app.post('/api/version/:versionId/snapshot', async (req, res) => {
+  try {
+    await initDb();
+    const versionId = parseInt(req.params.versionId, 10);
+    const { data, usuario = null, metadata = null } = req.body || {};
+    if (!versionId || data === undefined) return res.status(400).json({ error: 'versionId y data requeridos' });
+    const vr = pool.request();
+    vr.input('vid', sql.Int, versionId);
+    const vexists = await vr.query(`SELECT TOP 1 Id FROM dbo.OdontogramaVersion WHERE Id = @vid`);
+    if (!vexists.recordset || vexists.recordset.length === 0) return res.status(404).json({ error: 'Version no existe' });
+    const jsonData = (typeof data === 'string') ? data : JSON.stringify(data);
+    const r = pool.request();
+    r.input('vid', sql.Int, versionId);
+    r.input('data', sql.NVarChar(sql.MAX), jsonData);
+    r.input('usuario', sql.NVarChar(100), usuario);
+    r.input('metadata', sql.NVarChar(sql.MAX), metadata);
+    // Upsert único por versión
+    const upsertSql = `IF EXISTS(SELECT 1 FROM dbo.OdontogramaVersionSnapshot WHERE OdontogramaVersionId=@vid)
+      BEGIN
+        UPDATE dbo.OdontogramaVersionSnapshot SET Data=@data, Fecha_Modificacion=GETDATE(), Usuario_Modificacion=@usuario, Metadata=@metadata WHERE OdontogramaVersionId=@vid;
+        SELECT OdontogramaVersionId AS OdontogramaVersionId FROM dbo.OdontogramaVersionSnapshot WHERE OdontogramaVersionId=@vid;
+      END
+      ELSE
+      BEGIN
+        INSERT INTO dbo.OdontogramaVersionSnapshot (OdontogramaVersionId, Data, Usuario_Creacion, Metadata) VALUES (@vid, @data, @usuario, @metadata);
+        SELECT OdontogramaVersionId AS OdontogramaVersionId FROM dbo.OdontogramaVersionSnapshot WHERE OdontogramaVersionId=@vid;
+      END`;
+    const rs = await r.query(upsertSql);
+    await logVersionAudit({ versionId, entidad: 'VersionSnapshot', accion: 'UPSERT', clave: `VersionId=${versionId}`, detalle: `Bytes=${jsonData.length}` , usuario});
+    res.status(201).json({ ok: true, versionId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error guardando snapshot' });
+  }
+});
+
+// GET /api/version/:versionId/snapshot -> { versionId, data }
+app.get('/api/version/:versionId/snapshot', async (req, res) => {
+  try {
+    await initDb();
+    const versionId = parseInt(req.params.versionId, 10);
+    if (!versionId) return res.status(400).json({ error: 'versionId requerido' });
+    const r = pool.request();
+    r.input('vid', sql.Int, versionId);
+    const rs = await r.query(`SELECT TOP 1 Data, Fecha_Creacion, Fecha_Modificacion, Usuario_Creacion, Usuario_Modificacion, Metadata FROM dbo.OdontogramaVersionSnapshot WHERE OdontogramaVersionId=@vid`);
+    if (!rs.recordset || rs.recordset.length === 0) return res.status(404).json({ error: 'Snapshot no encontrado' });
+    let parsed = null;
+    const raw = rs.recordset[0].Data;
+    try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
+    res.json({ versionId, data: parsed, raw, meta: rs.recordset[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error obteniendo snapshot' });
+  }
+});
+
+// ==========================
 // Base Diastema (OdontogramaId)
 // ==========================
 

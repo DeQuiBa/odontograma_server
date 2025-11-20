@@ -977,6 +977,29 @@
     END
     GO
 
+    -- =====================================================
+    -- SNAPSHOT COMPLETO DE LA VERSION (estado consolidado)
+    -- Guarda un JSON único por cada version del odontograma
+    -- para rehidratación rápida del histórico.
+    -- =====================================================
+    IF OBJECT_ID('dbo.OdontogramaVersionSnapshot','U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.OdontogramaVersionSnapshot (
+            Id INT IDENTITY PRIMARY KEY,
+            OdontogramaVersionId INT NOT NULL UNIQUE,
+            Data NVARCHAR(MAX) NOT NULL, -- JSON serializado con todos los arrays/mapas del front
+            Hash NVARCHAR(64) NULL,      -- opcional: hash de integridad (SHA256 hex) si se desea
+            Fecha_Creacion DATETIME2 NOT NULL DEFAULT(GETDATE()),
+            Fecha_Modificacion DATETIME2 NULL,
+            Usuario_Creacion NVARCHAR(100) NULL,
+            Usuario_Modificacion NVARCHAR(100) NULL,
+            Metadata NVARCHAR(MAX) NULL,
+            CONSTRAINT FK_OdontogramaVersionSnapshot_Version FOREIGN KEY (OdontogramaVersionId) REFERENCES dbo.OdontogramaVersion(Id) ON DELETE CASCADE
+        );
+        CREATE INDEX IX_OdontogramaVersionSnapshot_Version ON dbo.OdontogramaVersionSnapshot(OdontogramaVersionId);
+    END
+    GO
+
     PRINT 'Extensión de tablas avanzadas aplicada.';
     GO
 
