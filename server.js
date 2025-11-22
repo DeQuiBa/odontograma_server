@@ -94,112 +94,110 @@ app.use('/api/odontograma/:id', async (req, res, next) => {
 });
 
 
-// Quick existence check for patient account (nro_cuenta) - Busca en Atenciones O Pacientes
-app.get('/api/cuenta/:nroCuenta/existe', async (req, res) => {
+
+// =============================================
+// NUEVO: Búsqueda por Número de Historia Clínica
+// =============================================
+// Devuelve datos del paciente + conteo y últimos IDs de odontogramas/versiones ligados a su historia
+app.get('/api/historia/:nroHistoria/existe', async (req, res) => {
   try {
     await initDb();
-    const nroCuenta = parseInt(req.params.nroCuenta, 10);
-    if (!nroCuenta) return res.status(400).json({ error: 'nroCuenta inválido' });
+    const nroHistoria = req.params.nroHistoria && req.params.nroHistoria.trim();
+    if (!nroHistoria) return res.status(400).json({ error: 'nroHistoria requerido' });
 
+    // Buscar paciente por NroHistoriaClinica
     const r = pool.request();
-    r.input('nro', sql.Int, nroCuenta);
-
-    // Primero: Buscar en Atenciones (caso normal: nroCuenta = IdAtencion)
-    const atencionResult = await r.query(`
+    // Usar NVarChar para evitar error TDS con longitud/metadata
+    r.input('hist', sql.NVarChar(50), nroHistoria);
+    const pacienteRs = await r.query(`
       SELECT TOP 1 
-        a.IdAtencion AS NroCuenta,
+        p.NroHistoriaClinica,
         p.NroDocumento,
-        LTRIM(RTRIM(
-          CONCAT(
-            ISNULL(p.ApellidoPaterno,''), ' ',
-            ISNULL(p.ApellidoMaterno,''), ' ',
-            ISNULL(p.PrimerNombre,''), ' ',
-            ISNULL(p.SegundoNombre,'')
-          )
-        )) AS NombresPaciente,
-        h.NroHistoriaClinica
-      FROM dbo.Atenciones a
-      LEFT JOIN dbo.Pacientes p ON p.IdPaciente = a.IdPaciente
-      LEFT JOIN dbo.HistoriasClinicas h ON h.NroHistoriaClinica = p.NroHistoriaClinica
-      WHERE a.IdAtencion = @nro
+        LTRIM(RTRIM(CONCAT(ISNULL(p.ApellidoPaterno,''),' ',ISNULL(p.ApellidoMaterno,''),' ',ISNULL(p.PrimerNombre,''),' ',ISNULL(p.SegundoNombre,'')))) AS NombresPaciente,
+        p.IdPaciente
+      FROM dbo.Pacientes p
+      WHERE p.NroHistoriaClinica = @hist
     `);
+    const paciente = pacienteRs.recordset && pacienteRs.recordset[0] ? pacienteRs.recordset[0] : null;
+    const exists = !!paciente;
+    if (!exists) return res.json({ exists: false, source: 'HistoriaClinica', paciente: null, odontogramasCount: 0 });
 
-    let paciente = atencionResult.recordset && atencionResult.recordset[0] ? atencionResult.recordset[0] : null;
-    let source = 'Atenciones';
-    let exists = !!paciente;
+    // Obtener lista de odontogramas asociados a esa historia clínica.
+    // Un odontograma puede haberse creado con Nro_Cuenta = IdAtencion (Atenciones.IdAtencion)
+    // o Nro_Cuenta = IdPaciente. Cubrimos ambos casos.
+    const listRs = await pool.request()
+      .input('hist', sql.NVarChar(50), nroHistoria)
+      .query(`
+        SELECT o.Id, o.Nro_Cuenta, o.Activo, o.Fecha_Creacion
+        FROM dbo.Odontograma o
+        JOIN dbo.Atenciones a ON a.IdAtencion = o.Nro_Cuenta
+        JOIN dbo.Pacientes p ON p.IdPaciente = a.IdPaciente
+        WHERE p.NroHistoriaClinica = @hist
+        UNION
+        SELECT o.Id, o.Nro_Cuenta, o.Activo, o.Fecha_Creacion
+        FROM dbo.Odontograma o
+        JOIN dbo.Pacientes p ON p.IdPaciente = o.Nro_Cuenta
+        WHERE p.NroHistoriaClinica = @hist
+        ORDER BY Fecha_Creacion DESC, Id DESC
+      `);
+    const odontogramas = listRs.recordset || [];
+    const odontogramasCount = odontogramas.length;
 
-    // Si NO existe en Atenciones, buscar en Pacientes directamente (nroCuenta = IdPaciente)
-    if (!exists) {
-      const pacienteResult = await pool.request()
-        .input('nro', sql.Int, nroCuenta)
-        .query(`
-          SELECT TOP 1 
-            p.IdPaciente AS NroCuenta,
-            p.NroDocumento,
-            LTRIM(RTRIM(
-              CONCAT(
-                ISNULL(p.ApellidoPaterno,''), ' ',
-                ISNULL(p.ApellidoMaterno,''), ' ',
-                ISNULL(p.PrimerNombre,''), ' ',
-                ISNULL(p.SegundoNombre,'')
-              )
-            )) AS NombresPaciente,
-            h.NroHistoriaClinica
-          FROM dbo.Pacientes p
-          LEFT JOIN dbo.HistoriasClinicas h ON h.NroHistoriaClinica = p.NroHistoriaClinica
-          WHERE p.IdPaciente = @nro
-        `);
-      
-      paciente = pacienteResult.recordset && pacienteResult.recordset[0] ? pacienteResult.recordset[0] : null;
-      source = 'Pacientes';
-      exists = !!paciente;
-    }
-
-    // Si aún no existe, retornar false
-    if (!exists) {
-      return res.json({ 
-        exists: false, 
-        source: null, 
-        paciente: null, 
-        odontogramasCount: 0, 
-        latestOdontogramaId: null, 
-        latestVersionId: null 
-      });
-    }
-
-    // Conteo de odontogramas para ese nro_cuenta
-    const rs = await pool.request()
-      .input('nro', sql.Int, nroCuenta)
-      .query(`SELECT COUNT(1) AS cnt FROM dbo.Odontograma WHERE Nro_Cuenta = @nro`);
-    const odontogramasCount = rs.recordset?.[0]?.cnt || 0;
-
-    // Últimos Ids si existieran
     let latestOdontogramaId = null;
     let latestVersionId = null;
     if (odontogramasCount > 0) {
-      const lastO = await pool.request()
-        .input('nro', sql.Int, nroCuenta)
-        .query(`SELECT TOP 1 Id FROM dbo.Odontograma WHERE Nro_Cuenta = @nro ORDER BY Fecha_Creacion DESC, Id DESC`);
-      latestOdontogramaId = lastO.recordset?.[0]?.Id || null;
-      if (latestOdontogramaId) {
-        const lastV = await pool.request()
-          .input('oId', sql.Int, latestOdontogramaId)
-          .query(`SELECT TOP 1 Id FROM dbo.OdontogramaVersion WHERE OdontogramaId = @oId ORDER BY VersionNumber DESC, Id DESC`);
-        latestVersionId = lastV.recordset?.[0]?.Id || null;
-      }
+      latestOdontogramaId = odontogramas[0].Id;
+      const vRs = await pool.request()
+        .input('odId', sql.Int, latestOdontogramaId)
+        .query(`SELECT TOP 1 Id FROM dbo.OdontogramaVersion WHERE OdontogramaId = @odId ORDER BY VersionNumber DESC, Id DESC`);
+      latestVersionId = vRs.recordset && vRs.recordset[0] ? vRs.recordset[0].Id : null;
     }
 
-    return res.json({ 
-      exists, 
-      source, 
-      paciente, 
-      odontogramasCount, 
-      latestOdontogramaId, 
-      latestVersionId 
+    return res.json({
+      exists,
+      source: 'HistoriaClinica',
+      paciente: {
+        nroHistoriaClinica: paciente.NroHistoriaClinica,
+        nroDocumento: paciente.NroDocumento,
+        nombresPaciente: paciente.NombresPaciente,
+        idPaciente: paciente.IdPaciente
+      },
+      odontogramasCount,
+      latestOdontogramaId,
+      latestVersionId,
+      odontogramas
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Error verificando nro_cuenta' });
+    res.status(500).json({ error: 'Error verificando nroHistoriaClinica' });
+  }
+});
+
+// Listado compacto de odontogramas por historia clínica
+app.get('/api/historia/:nroHistoria/odontogramas', async (req, res) => {
+  try {
+    await initDb();
+    const nroHistoria = req.params.nroHistoria && req.params.nroHistoria.trim();
+    if (!nroHistoria) return res.status(400).json({ error: 'nroHistoria requerido' });
+    const rs = await pool.request()
+      .input('hist', sql.NVarChar(50), nroHistoria)
+      .query(`
+        SELECT o.Id, o.Nro_Cuenta, o.Fecha_Creacion, o.Activo
+        FROM dbo.Odontograma o
+        JOIN dbo.Atenciones a ON a.IdAtencion = o.Nro_Cuenta
+        JOIN dbo.Pacientes p ON p.IdPaciente = a.IdPaciente
+        WHERE p.NroHistoriaClinica = @hist
+        UNION
+        SELECT o.Id, o.Nro_Cuenta, o.Fecha_Creacion, o.Activo
+        FROM dbo.Odontograma o
+        JOIN dbo.Pacientes p ON p.IdPaciente = o.Nro_Cuenta
+        WHERE p.NroHistoriaClinica = @hist
+        ORDER BY Fecha_Creacion DESC, Id DESC
+      `);
+    res.json(rs.recordset || []);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error listando odontogramas por historia clínica' });
   }
 });
 
@@ -1516,6 +1514,71 @@ app.get('/api/odontograma/historico/:nroCuenta/:correlativo', async (req, res) =
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error obteniendo historial por correlativo' });
+  }
+});
+
+// =============================================
+// NUEVA RUTA: Requerimiento por correlativo + nro_cuenta
+// =============================================
+app.get('/api/requerimiento/correlativo/:correlativo/:nroCuenta', async (req, res) => {
+  try {
+    await initDb();
+    const { correlativo, nroCuenta } = req.params;
+    const request = pool.request();
+    request.input('correlativo', sql.VarChar(50), correlativo);
+    request.input('nro_cuenta', sql.Int, parseInt(nroCuenta, 10));
+    const result = await request.query(`
+      SELECT 
+        rb.id,
+        rb.id_correlativo,
+        rb.nro_cuenta,
+        rb.medico,
+        rb.nombres_paciente,
+        rb.edad,
+        rb.historia_clinica,
+        rb.fecha_salida,
+        rb.hora,
+        rb.servicio,
+        rb.fecha_creacion,
+        rb.usuario_creacion,
+        dfb.funcion,
+        dfb.opcion
+      FROM RequerimientoBiologico rb
+      LEFT JOIN DetalleFuncionBiologica dfb ON dfb.requerimiento_id = rb.id
+      WHERE rb.id_correlativo = @correlativo AND rb.nro_cuenta = @nro_cuenta
+    `);
+    if (!result.recordset || result.recordset.length === 0) return res.status(404).json({ error: 'Requerimiento no encontrado' });
+    const base = result.recordset[0];
+    const requerimiento = {
+      id: base.id,
+      id_correlativo: base.id_correlativo,
+      nro_cuenta: base.nro_cuenta,
+      medico: base.medico,
+      nombres_paciente: base.nombres_paciente,
+      edad: base.edad,
+      historia_clinica: base.historia_clinica,
+      fecha_salida: base.fecha_salida,
+      hora: base.hora ? base.hora.toISOString().substring(11, 16) : null,
+      servicio: base.servicio,
+      fecha_creacion: base.fecha_creacion,
+      usuario_creacion: base.usuario_creacion,
+      funciones: {}
+    };
+    for (const row of result.recordset) {
+      if (row.funcion) {
+        if (!requerimiento.funciones[row.funcion]) requerimiento.funciones[row.funcion] = [];
+        requerimiento.funciones[row.funcion].push(row.opcion);
+      }
+    }
+    requerimiento.total_funciones = Object.keys(requerimiento.funciones).length;
+    if (requerimiento.fecha_creacion) {
+      const fecha = new Date(requerimiento.fecha_creacion);
+      requerimiento.fecha_formato = fecha.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    }
+    res.json(requerimiento);
+  } catch (error) {
+    console.error('Error obteniendo requerimiento:', error);
+    res.status(500).json({ error: 'Error obteniendo requerimiento' });
   }
 });
 
