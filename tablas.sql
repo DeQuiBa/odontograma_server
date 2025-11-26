@@ -1,13 +1,12 @@
     -- tablas.sql
     -- Script para SQL Server 2012
     -- Contiene las tablas necesarias para almacenar odontogramas y sus componentes.
-    -- Relación principal: cada odontograma está asociado a un nro_cuenta (número de cuenta del paciente).
+    -- Relación principal: cada odontograma está asociado a un Nro_Historia (número de historia clínica del paciente).
     -- Contiene las tablas necesarias para almacenar odontogramas y sus componentes.
-    -- Relación principal: cada odontograma está asociado a un nro_cuenta (número de cuenta del paciente).
+    -- Relación principal: cada odontograma está asociado a un Nro_Historia (número de historia clínica del paciente).
 
-    -- NOTA: Si ya existe una tabla de pacientes en tu DB (por ejemplo con clave nro_cuenta), puedes
-    -- agregar FOREIGN KEY hacia esa tabla; en este script dejamos nro_cuenta como INT y opcionalmente
-    -- añadimos FK comentada para que la habilites si existe la tabla.
+    -- NOTA: Si ya existe una tabla de pacientes en tu DB (por ejemplo con clave NroHistoriaClinica), puedes
+    -- agregar FOREIGN KEY hacia esa tabla; en este script usamos Nro_Historia como NVARCHAR(50).
 
     SET ANSI_NULLS ON;
     SET QUOTED_IDENTIFIER ON;
@@ -76,7 +75,7 @@
 
     CREATE TABLE dbo.Odontograma (
         Id INT IDENTITY(1,1) PRIMARY KEY,
-        Nro_Cuenta INT NOT NULL,
+        Nro_Historia NVARCHAR(50) NOT NULL,
         Version INT NOT NULL DEFAULT(1),
         Fecha_Visita DATETIME2 NULL,
         Tipo_Visita NVARCHAR(50) NULL,
@@ -90,10 +89,10 @@
     );
     GO
 
-    -- Índice por nro_cuenta para búsquedas rápidas
-    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Odontograma_NroCuenta' AND object_id = OBJECT_ID('dbo.Odontograma'))
+    -- Índice por nro_historia para búsquedas rápidas
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Odontograma_NroHistoria' AND object_id = OBJECT_ID('dbo.Odontograma'))
     BEGIN
-        CREATE NONCLUSTERED INDEX IX_Odontograma_NroCuenta ON dbo.Odontograma(Nro_Cuenta);
+        CREATE NONCLUSTERED INDEX IX_Odontograma_NroHistoria ON dbo.Odontograma(Nro_Historia);
     END
     GO
 
@@ -102,7 +101,7 @@
     CREATE TABLE dbo.Diente (
         Id INT IDENTITY(1,1) PRIMARY KEY,
         OdontogramaId INT NOT NULL,
-        Nro_Cuenta INT NOT NULL,
+        Nro_Historia NVARCHAR(50) NOT NULL,
         NumeroDiente TINYINT NOT NULL, -- convención ISO 1..32 o FDI 11..48 etc. almacenar según tu uso
         EstadoCodigo NVARCHAR(50) NULL, -- referencia a CatalogoEstadoDiente.Codigo
         Estado NVARCHAR(100) NULL,     -- etiqueta libre para lectura rápida
@@ -122,9 +121,9 @@
     BEGIN
         CREATE NONCLUSTERED INDEX IX_Diente_OdontogramaId ON dbo.Diente(OdontogramaId);
     END
-    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Diente_NroCuenta' AND object_id = OBJECT_ID('dbo.Diente'))
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Diente_NroHistoria' AND object_id = OBJECT_ID('dbo.Diente'))
     BEGIN
-        CREATE NONCLUSTERED INDEX IX_Diente_NroCuenta ON dbo.Diente(Nro_Cuenta);
+        CREATE NONCLUSTERED INDEX IX_Diente_NroHistoria ON dbo.Diente(Nro_Historia);
     END
     IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Diente_Odontograma_Numero' AND object_id = OBJECT_ID('dbo.Diente'))
     BEGIN
@@ -136,11 +135,12 @@
     CREATE TABLE dbo.DienteArea (
         Id INT IDENTITY(1,1) PRIMARY KEY,
         OdontogramaId INT NOT NULL,
-        Nro_Cuenta INT NOT NULL,
+        Nro_Historia NVARCHAR(50) NOT NULL,
         NumeroDiente TINYINT NOT NULL,
         Area NVARCHAR(50) NOT NULL,
         Estado NVARCHAR(100) NULL,
         Color NVARCHAR(30) NULL,
+        Observaciones NVARCHAR(500) NULL,
         Metadata NVARCHAR(MAX) NULL,
         Fecha_Creacion DATETIME2 NOT NULL DEFAULT(GETDATE()),
         Usuario_Creacion NVARCHAR(100) NULL,
@@ -154,9 +154,9 @@
     BEGIN
         CREATE NONCLUSTERED INDEX IX_DienteArea_OdontogramaId ON dbo.DienteArea(OdontogramaId);
     END
-    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DienteArea_NroCuenta' AND object_id = OBJECT_ID('dbo.DienteArea'))
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DienteArea_NroHistoria' AND object_id = OBJECT_ID('dbo.DienteArea'))
     BEGIN
-        CREATE NONCLUSTERED INDEX IX_DienteArea_NroCuenta ON dbo.DienteArea(Nro_Cuenta);
+        CREATE NONCLUSTERED INDEX IX_DienteArea_NroHistoria ON dbo.DienteArea(Nro_Historia);
     END
     GO
 
@@ -164,7 +164,7 @@
     CREATE TABLE dbo.DienteCodigo (
         Id INT IDENTITY(1,1) PRIMARY KEY,
         OdontogramaId INT NOT NULL,
-        Nro_Cuenta INT NOT NULL,
+        Nro_Historia NVARCHAR(50) NOT NULL,
         NumeroDiente TINYINT NOT NULL,
         Codigo NVARCHAR(50) NOT NULL,
         Descripcion NVARCHAR(250) NULL,
@@ -180,9 +180,9 @@
     BEGIN
         CREATE NONCLUSTERED INDEX IX_DienteCodigo_OdontogramaId ON dbo.DienteCodigo(OdontogramaId);
     END
-    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DienteCodigo_NroCuenta' AND object_id = OBJECT_ID('dbo.DienteCodigo'))
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DienteCodigo_NroHistoria' AND object_id = OBJECT_ID('dbo.DienteCodigo'))
     BEGIN
-        CREATE NONCLUSTERED INDEX IX_DienteCodigo_NroCuenta ON dbo.DienteCodigo(Nro_Cuenta);
+        CREATE NONCLUSTERED INDEX IX_DienteCodigo_NroHistoria ON dbo.DienteCodigo(Nro_Historia);
     END
     GO
 
@@ -191,7 +191,7 @@
     CREATE TABLE dbo.Transposicion (
         Id INT IDENTITY(1,1) PRIMARY KEY,
         OdontogramaId INT NOT NULL,
-        Nro_Cuenta INT NOT NULL,
+        Nro_Historia NVARCHAR(50) NOT NULL,
         Diente_From TINYINT NOT NULL,
         Diente_To TINYINT NOT NULL,
         Color NVARCHAR(30) NULL,
@@ -205,9 +205,9 @@
     BEGIN
         CREATE NONCLUSTERED INDEX IX_Transposicion_OdontogramaId ON dbo.Transposicion(OdontogramaId);
     END
-    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Transposicion_NroCuenta' AND object_id = OBJECT_ID('dbo.Transposicion'))
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Transposicion_NroHistoria' AND object_id = OBJECT_ID('dbo.Transposicion'))
     BEGIN
-        CREATE NONCLUSTERED INDEX IX_Transposicion_NroCuenta ON dbo.Transposicion(Nro_Cuenta);
+        CREATE NONCLUSTERED INDEX IX_Transposicion_NroHistoria ON dbo.Transposicion(Nro_Historia);
     END
     GO
 
@@ -216,7 +216,7 @@
     CREATE TABLE dbo.Protesis (
         Id INT IDENTITY(1,1) PRIMARY KEY,
         OdontogramaId INT NOT NULL,
-        Nro_Cuenta INT NOT NULL,
+        Nro_Historia NVARCHAR(50) NOT NULL,
         Tipo NVARCHAR(50) NOT NULL, -- 'corona','puente','implante','removible_parcial','removible_total'
         SubTipo NVARCHAR(100) NULL,
         Posicion NVARCHAR(20) NULL, -- 'superior'|'inferior'|'ambas'
@@ -240,9 +240,9 @@
     BEGIN
         CREATE NONCLUSTERED INDEX IX_Protesis_OdontogramaId ON dbo.Protesis(OdontogramaId);
     END
-    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Protesis_NroCuenta' AND object_id = OBJECT_ID('dbo.Protesis'))
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Protesis_NroHistoria' AND object_id = OBJECT_ID('dbo.Protesis'))
     BEGIN
-        CREATE NONCLUSTERED INDEX IX_Protesis_NroCuenta ON dbo.Protesis(Nro_Cuenta);
+        CREATE NONCLUSTERED INDEX IX_Protesis_NroHistoria ON dbo.Protesis(Nro_Historia);
     END
     IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProtesisTeeth_ProtesisId' AND object_id = OBJECT_ID('dbo.ProtesisTeeth'))
     BEGIN
@@ -255,7 +255,7 @@
     CREATE TABLE dbo.Diastema (
         Id INT IDENTITY(1,1) PRIMARY KEY,
         OdontogramaId INT NOT NULL,
-        Nro_Cuenta INT NOT NULL,
+        Nro_Historia NVARCHAR(50) NOT NULL,
         Diente_Left TINYINT NOT NULL,
         Diente_Right TINYINT NOT NULL,
         Tamano DECIMAL(6,2) NULL, -- tamaño en mm (opcional)
@@ -270,9 +270,9 @@
     BEGIN
         CREATE NONCLUSTERED INDEX IX_Diastema_OdontogramaId ON dbo.Diastema(OdontogramaId);
     END
-    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Diastema_NroCuenta' AND object_id = OBJECT_ID('dbo.Diastema'))
+    IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Diastema_NroHistoria' AND object_id = OBJECT_ID('dbo.Diastema'))
     BEGIN
-        CREATE NONCLUSTERED INDEX IX_Diastema_NroCuenta ON dbo.Diastema(Nro_Cuenta);
+        CREATE NONCLUSTERED INDEX IX_Diastema_NroHistoria ON dbo.Diastema(Nro_Historia);
     END
     GO
 
@@ -281,7 +281,7 @@
     CREATE TABLE dbo.OdontogramaAudit (
         Id INT IDENTITY(1,1) PRIMARY KEY,
         OdontogramaId INT NULL,
-        Nro_Cuenta INT NULL,
+        Nro_Historia NVARCHAR(50) NULL,
         Accion NVARCHAR(50) NOT NULL,
         Detalle NVARCHAR(MAX) NULL,
         Fecha DATETIME2 NOT NULL DEFAULT(GETDATE()),
@@ -351,8 +351,8 @@
     AS
     BEGIN
         SET NOCOUNT ON;
-        INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Cuenta, Accion, Detalle, Usuario)
-        SELECT i.OdontogramaId, i.Nro_Cuenta, 'INSERT_DIENTE_CODIGO',
+        INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Historia, Accion, Detalle, Usuario)
+        SELECT i.OdontogramaId, i.Nro_Historia, 'INSERT_DIENTE_CODIGO',
             'Diente=' + CAST(i.NumeroDiente AS NVARCHAR(10)) + ';Codigo=' + i.Codigo + ';Desc=' + ISNULL(i.Descripcion,''),
             i.Usuario_Creacion
         FROM inserted i;
@@ -368,8 +368,8 @@
     AS
     BEGIN
         SET NOCOUNT ON;
-        INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Cuenta, Accion, Detalle, Usuario)
-        SELECT i.OdontogramaId, i.Nro_Cuenta,
+        INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Historia, Accion, Detalle, Usuario)
+        SELECT i.OdontogramaId, i.Nro_Historia,
             CASE WHEN EXISTS(SELECT 1 FROM deleted d WHERE d.Id = i.Id) THEN 'UPDATE_DIENTE_AREA' ELSE 'INSERT_DIENTE_AREA' END,
             'Diente=' + CAST(i.NumeroDiente AS NVARCHAR(10)) + ';Area=' + i.Area + ';Estado=' + ISNULL(i.Estado,''),
             i.Usuario_Creacion
@@ -386,8 +386,8 @@
     AS
     BEGIN
         SET NOCOUNT ON;
-        INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Cuenta, Accion, Detalle, Usuario)
-        SELECT i.OdontogramaId, i.Nro_Cuenta, 'INSERT_PROTESIS', 'Tipo=' + i.Tipo + ';SubTipo=' + ISNULL(i.SubTipo,''), i.Usuario_Creacion
+        INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Historia, Accion, Detalle, Usuario)
+        SELECT i.OdontogramaId, i.Nro_Historia, 'INSERT_PROTESIS', 'Tipo=' + i.Tipo + ';SubTipo=' + ISNULL(i.SubTipo,''), i.Usuario_Creacion
         FROM inserted i;
     END
     GO
@@ -401,8 +401,8 @@
     AS
     BEGIN
         SET NOCOUNT ON;
-        INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Cuenta, Accion, Detalle, Usuario)
-        SELECT i.OdontogramaId, i.Nro_Cuenta, 'INSERT_TRANSPOSICION', 'From=' + CAST(i.Diente_From AS NVARCHAR(10)) + ';To=' + CAST(i.Diente_To AS NVARCHAR(10)), i.Usuario_Creacion
+        INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Historia, Accion, Detalle, Usuario)
+        SELECT i.OdontogramaId, i.Nro_Historia, 'INSERT_TRANSPOSICION', 'From=' + CAST(i.Diente_From AS NVARCHAR(10)) + ';To=' + CAST(i.Diente_To AS NVARCHAR(10)), i.Usuario_Creacion
         FROM inserted i;
     END
     GO
@@ -543,6 +543,32 @@
             CONSTRAINT UQ_Intrusion UNIQUE (OdontogramaVersionId, NumeroDiente)
         );
         CREATE INDEX IX_Intrusion_Version ON dbo.Intrusion(OdontogramaVersionId);
+    END
+    GO
+
+    -- Nueva tabla: configuración de raíces por diente (triángulos superiores)
+    -- Captura el estado visual de hasta 3 triángulos (según tipo de diente) en la versión.
+    -- Configuracion: 1,2,3 (cantidad de triángulos que aplica al diente en UI)
+    IF OBJECT_ID('dbo.Raiz','U') IS NULL
+    BEGIN
+        CREATE TABLE dbo.Raiz (
+            Id INT IDENTITY PRIMARY KEY,
+            OdontogramaVersionId INT NOT NULL,
+            NumeroDiente TINYINT NOT NULL,
+            Configuracion TINYINT NOT NULL, -- 1 | 2 | 3
+            Triangulo1Activo BIT NOT NULL DEFAULT(0),
+            Triangulo2Activo BIT NOT NULL DEFAULT(0),
+            Triangulo3Activo BIT NOT NULL DEFAULT(0),
+            Activo BIT NOT NULL DEFAULT(1),
+            Metadata NVARCHAR(MAX) NULL,
+            Fecha_Creacion DATETIME2 NOT NULL DEFAULT(GETDATE()),
+            Usuario_Creacion NVARCHAR(100) NULL,
+            Fecha_Modificacion DATETIME2 NULL,
+            Usuario_Modificacion NVARCHAR(100) NULL,
+            CONSTRAINT FK_Raiz_Version FOREIGN KEY (OdontogramaVersionId) REFERENCES dbo.OdontogramaVersion(Id) ON DELETE CASCADE,
+            CONSTRAINT UQ_Raiz UNIQUE (OdontogramaVersionId, NumeroDiente)
+        );
+        CREATE INDEX IX_Raiz_Version ON dbo.Raiz(OdontogramaVersionId);
     END
     GO
 
@@ -1005,189 +1031,3 @@
 
 
 
-    -- ==================================================================
-    -- Bloque opcional de limpieza (DROP) - ejecutar antes de actualizar
-    -- Ejecuta este bloque si quieres eliminar las tablas/objetos creados
-    -- anteriormente para evitar conflictos al volver a aplicar el script.
-    -- NOTA: revisa y usa con cuidado en entornos de producción.
-    -- ==================================================================
-
-    /*
-    Bloque adicional: limpieza idempotente para entornos de desarrollo.
-    Ejecuta este bloque si necesitas eliminar objetos creados por este script antes de volver a aplicarlo.
-    */
-    -- Limpieza: eliminar triggers e índices (de forma segura si existen)
-    IF OBJECT_ID('dbo.trg_DienteCodigo_Insert','TR') IS NOT NULL DROP TRIGGER dbo.trg_DienteCodigo_Insert;
-    IF OBJECT_ID('dbo.trg_DienteArea_InsertUpdate','TR') IS NOT NULL DROP TRIGGER dbo.trg_DienteArea_InsertUpdate;
-    IF OBJECT_ID('dbo.trg_Protesis_Insert','TR') IS NOT NULL DROP TRIGGER dbo.trg_Protesis_Insert;
-    IF OBJECT_ID('dbo.trg_Transposicion_Insert','TR') IS NOT NULL DROP TRIGGER dbo.trg_Transposicion_Insert;
-
-    -- (Opcional) eliminar índices creados por el script
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Odontograma_NroCuenta' AND object_id = OBJECT_ID('dbo.Odontograma'))
-        DROP INDEX IX_Odontograma_NroCuenta ON dbo.Odontograma;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Diente_OdontogramaId' AND object_id = OBJECT_ID('dbo.Diente'))
-        DROP INDEX IX_Diente_OdontogramaId ON dbo.Diente;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Transposicion_OdontogramaId' AND object_id = OBJECT_ID('dbo.Transposicion'))
-        DROP INDEX IX_Transposicion_OdontogramaId ON dbo.Transposicion;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Protesis_OdontogramaId' AND object_id = OBJECT_ID('dbo.Protesis'))
-        DROP INDEX IX_Protesis_OdontogramaId ON dbo.Protesis;
-
-    -- (Opcional) eliminar tablas en orden inverso de dependencia
-    IF OBJECT_ID('dbo.ProtesisTeeth','U') IS NOT NULL DROP TABLE dbo.ProtesisTeeth;
-    IF OBJECT_ID('dbo.Protesis','U') IS NOT NULL DROP TABLE dbo.Protesis;
-    IF OBJECT_ID('dbo.Transposicion','U') IS NOT NULL DROP TABLE dbo.Transposicion;
-    IF OBJECT_ID('dbo.DienteCodigo','U') IS NOT NULL DROP TABLE dbo.DienteCodigo;
-    IF OBJECT_ID('dbo.DienteArea','U') IS NOT NULL DROP TABLE dbo.DienteArea;
-    IF OBJECT_ID('dbo.Diente','U') IS NOT NULL DROP TABLE dbo.Diente;
-    IF OBJECT_ID('dbo.Diastema','U') IS NOT NULL DROP TABLE dbo.Diastema;
-    IF OBJECT_ID('dbo.TempRestoration','U') IS NOT NULL DROP TABLE dbo.TempRestoration;
-    IF OBJECT_ID('dbo.OdontogramaAudit','U') IS NOT NULL DROP TABLE dbo.OdontogramaAudit;
-    IF OBJECT_ID('dbo.CatalogoProcedimiento','U') IS NOT NULL DROP TABLE dbo.CatalogoProcedimiento;
-    IF OBJECT_ID('dbo.CatalogoEstadoDiente','U') IS NOT NULL DROP TABLE dbo.CatalogoEstadoDiente;
-    IF OBJECT_ID('dbo.Odontograma','U') IS NOT NULL DROP TABLE dbo.Odontograma;
-
-
-
-    -- Eliminar triggers relacionados (si existen)
-    IF OBJECT_ID('dbo.trg_DienteCodigo_Insert','TR') IS NOT NULL DROP TRIGGER dbo.trg_DienteCodigo_Insert;
-    IF OBJECT_ID('dbo.trg_DienteArea_InsertUpdate','TR') IS NOT NULL DROP TRIGGER dbo.trg_DienteArea_InsertUpdate;
-    IF OBJECT_ID('dbo.trg_Protesis_Insert','TR') IS NOT NULL DROP TRIGGER dbo.trg_Protesis_Insert;
-    IF OBJECT_ID('dbo.trg_Transposicion_Insert','TR') IS NOT NULL DROP TRIGGER dbo.trg_Transposicion_Insert;
-    GO
-
-    -- Eliminar índices explícitos que pudieran quedar (comprobación previa)
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DienteCodigo_OdontogramaId' AND object_id = OBJECT_ID('dbo.DienteCodigo'))
-        DROP INDEX IX_DienteCodigo_OdontogramaId ON dbo.DienteCodigo;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DienteCodigo_NroCuenta' AND object_id = OBJECT_ID('dbo.DienteCodigo'))
-        DROP INDEX IX_DienteCodigo_NroCuenta ON dbo.DienteCodigo;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DienteArea_OdontogramaId' AND object_id = OBJECT_ID('dbo.DienteArea'))
-        DROP INDEX IX_DienteArea_OdontogramaId ON dbo.DienteArea;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_DienteArea_NroCuenta' AND object_id = OBJECT_ID('dbo.DienteArea'))
-        DROP INDEX IX_DienteArea_NroCuenta ON dbo.DienteArea;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Transposicion_OdontogramaId' AND object_id = OBJECT_ID('dbo.Transposicion'))
-        DROP INDEX IX_Transposicion_OdontogramaId ON dbo.Transposicion;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Transposicion_NroCuenta' AND object_id = OBJECT_ID('dbo.Transposicion'))
-        DROP INDEX IX_Transposicion_NroCuenta ON dbo.Transposicion;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Protesis_OdontogramaId' AND object_id = OBJECT_ID('dbo.Protesis'))
-        DROP INDEX IX_Protesis_OdontogramaId ON dbo.Protesis;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Protesis_NroCuenta' AND object_id = OBJECT_ID('dbo.Protesis'))
-        DROP INDEX IX_Protesis_NroCuenta ON dbo.Protesis;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ProtesisTeeth_ProtesisId' AND object_id = OBJECT_ID('dbo.ProtesisTeeth'))
-        DROP INDEX IX_ProtesisTeeth_ProtesisId ON dbo.ProtesisTeeth;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Diastema_OdontogramaId' AND object_id = OBJECT_ID('dbo.Diastema'))
-        DROP INDEX IX_Diastema_OdontogramaId ON dbo.Diastema;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Diastema_NroCuenta' AND object_id = OBJECT_ID('dbo.Diastema'))
-        DROP INDEX IX_Diastema_NroCuenta ON dbo.Diastema;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Diente_OdontogramaId' AND object_id = OBJECT_ID('dbo.Diente'))
-        DROP INDEX IX_Diente_OdontogramaId ON dbo.Diente;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Diente_NroCuenta' AND object_id = OBJECT_ID('dbo.Diente'))
-        DROP INDEX IX_Diente_NroCuenta ON dbo.Diente;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_Diente_Odontograma_Numero' AND object_id = OBJECT_ID('dbo.Diente'))
-        DROP INDEX UQ_Diente_Odontograma_Numero ON dbo.Diente;
-    IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Odontograma_NroCuenta' AND object_id = OBJECT_ID('dbo.Odontograma'))
-        DROP INDEX IX_Odontograma_NroCuenta ON dbo.Odontograma;
-    GO
-
-    -- Eliminar tablas en orden inverso de dependencias para evitar errores de FK
-    IF OBJECT_ID('dbo.ProtesisTeeth','U') IS NOT NULL DROP TABLE dbo.ProtesisTeeth;
-    IF OBJECT_ID('dbo.Protesis','U') IS NOT NULL DROP TABLE dbo.Protesis;
-    IF OBJECT_ID('dbo.DienteCodigo','U') IS NOT NULL DROP TABLE dbo.DienteCodigo;
-    IF OBJECT_ID('dbo.DienteArea','U') IS NOT NULL DROP TABLE dbo.DienteArea;
-    IF OBJECT_ID('dbo.Diente','U') IS NOT NULL DROP TABLE dbo.Diente;
-    IF OBJECT_ID('dbo.Transposicion','U') IS NOT NULL DROP TABLE dbo.Transposicion;
-    IF OBJECT_ID('dbo.Diastema','U') IS NOT NULL DROP TABLE dbo.Diastema;
-    IF OBJECT_ID('dbo.TempRestoration','U') IS NOT NULL DROP TABLE dbo.TempRestoration;
-    IF OBJECT_ID('dbo.Edentulo','U') IS NOT NULL DROP TABLE dbo.Edentulo;
-    IF OBJECT_ID('dbo.Espigo','U') IS NOT NULL DROP TABLE dbo.Espigo;
-    IF OBJECT_ID('dbo.Fractura','U') IS NOT NULL DROP TABLE dbo.Fractura;
-    IF OBJECT_ID('dbo.Fusion','U') IS NOT NULL DROP TABLE dbo.Fusion;
-    IF OBJECT_ID('dbo.Geminacion','U') IS NOT NULL DROP TABLE dbo.Geminacion;
-    IF OBJECT_ID('dbo.Giroversion','U') IS NOT NULL DROP TABLE dbo.Giroversion;
-    IF OBJECT_ID('dbo.Clavija','U') IS NOT NULL DROP TABLE dbo.Clavija;
-    IF OBJECT_ID('dbo.Erupcion','U') IS NOT NULL DROP TABLE dbo.Erupcion;
-    IF OBJECT_ID('dbo.Extruida','U') IS NOT NULL DROP TABLE dbo.Extruida;
-    IF OBJECT_ID('dbo.Intrusion','U') IS NOT NULL DROP TABLE dbo.Intrusion;
-    IF OBJECT_ID('dbo.Supernumeraria','U') IS NOT NULL DROP TABLE dbo.Supernumeraria;
-    IF OBJECT_ID('dbo.FullProsthesis','U') IS NOT NULL DROP TABLE dbo.FullProsthesis;
-    IF OBJECT_ID('dbo.PartialRemovable','U') IS NOT NULL DROP TABLE dbo.PartialRemovable;
-    IF OBJECT_ID('dbo.RemovableAppliance','U') IS NOT NULL DROP TABLE dbo.RemovableAppliance;
-    IF OBJECT_ID('dbo.OdontogramaAudit','U') IS NOT NULL DROP TABLE dbo.OdontogramaAudit;
-    IF OBJECT_ID('dbo.CatalogoProcedimiento','U') IS NOT NULL DROP TABLE dbo.CatalogoProcedimiento;
-    IF OBJECT_ID('dbo.CatalogoEstadoDiente','U') IS NOT NULL DROP TABLE dbo.CatalogoEstadoDiente;
-    IF OBJECT_ID('dbo.Odontograma','U') IS NOT NULL DROP TABLE dbo.Odontograma;
-    GO
-
-    -- ==================================================================
-    -- BLOQUE AMPLIADO DE LIMPIEZA SEGURO (VERSIONAMIENTO)
-    -- Este bloque elimina primero las tablas que dependen de OdontogramaVersion
-    -- y luego OdontogramaVersion, para permitir que finalmente se pueda eliminar
-    -- Odontograma sin errores de FOREIGN KEY.
-    -- Ejecuta sólo en entornos de desarrollo / migración.
-    -- ==================================================================
-    /*
-        IMPORTANTE:
-        1. Asegúrate de tener respaldo antes de ejecutar.
-        2. Si hay sesiones usando estas tablas, podrías necesitar:
-            ALTER DATABASE <TuDB> SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-            ... DROP ...
-            ALTER DATABASE <TuDB> SET MULTI_USER;
-    */
-
-    -- Eliminar triggers adicionales si existieran sobre tablas versionadas (no listados originalmente)
-    -- (Agregar aquí si en el futuro se crean triggers sobre las tablas de versión)
-
-    -- 1) Tablas de elementos versionados (hijos de OdontogramaVersion)
-    IF OBJECT_ID('dbo.Linea','U') IS NOT NULL DROP TABLE dbo.Linea;
-    IF OBJECT_ID('dbo.Flecha','U') IS NOT NULL DROP TABLE dbo.Flecha;
-    IF OBJECT_ID('dbo.SimboloClinico','U') IS NOT NULL DROP TABLE dbo.SimboloClinico;
-    IF OBJECT_ID('dbo.Anotacion','U') IS NOT NULL DROP TABLE dbo.Anotacion;
-    IF OBJECT_ID('dbo.AparatoFijoDiente','U') IS NOT NULL DROP TABLE dbo.AparatoFijoDiente;
-    IF OBJECT_ID('dbo.AparatoFijo','U') IS NOT NULL DROP TABLE dbo.AparatoFijo;
-    IF OBJECT_ID('dbo.ArcoOrtodoncia','U') IS NOT NULL DROP TABLE dbo.ArcoOrtodoncia;
-    IF OBJECT_ID('dbo.AparatoFijoDiente','U') IS NOT NULL DROP TABLE dbo.AparatoFijoDiente;
-    IF OBJECT_ID('dbo.AparatoFijo','U') IS NOT NULL DROP TABLE dbo.AparatoFijo;
-    IF OBJECT_ID('dbo.AparatoRemovible','U') IS NOT NULL DROP TABLE dbo.AparatoRemovible;
-    IF OBJECT_ID('dbo.ProtesisVTeeth','U') IS NOT NULL DROP TABLE dbo.ProtesisVTeeth;
-    IF OBJECT_ID('dbo.ProtesisV','U') IS NOT NULL DROP TABLE dbo.ProtesisV;
-    IF OBJECT_ID('dbo.Implante','U') IS NOT NULL DROP TABLE dbo.Implante;
-    IF OBJECT_ID('dbo.Fusion','U') IS NOT NULL DROP TABLE dbo.Fusion;
-    IF OBJECT_ID('dbo.Edentulo','U') IS NOT NULL DROP TABLE dbo.Edentulo;
-    IF OBJECT_ID('dbo.Supernumerario','U') IS NOT NULL DROP TABLE dbo.Supernumerario;
-    IF OBJECT_ID('dbo.Restauracion','U') IS NOT NULL DROP TABLE dbo.Restauracion;
-    IF OBJECT_ID('dbo.CoronaV','U') IS NOT NULL DROP TABLE dbo.CoronaV;
-    IF OBJECT_ID('dbo.CoronaTemporal','U') IS NOT NULL DROP TABLE dbo.CoronaTemporal;
-    IF OBJECT_ID('dbo.Endodoncia','U') IS NOT NULL DROP TABLE dbo.Endodoncia;
-    IF OBJECT_ID('dbo.Impactacion','U') IS NOT NULL DROP TABLE dbo.Impactacion;
-    IF OBJECT_ID('dbo.Geminacion','U') IS NOT NULL DROP TABLE dbo.Geminacion;
-    IF OBJECT_ID('dbo.Giroversion','U') IS NOT NULL DROP TABLE dbo.Giroversion;
-    IF OBJECT_ID('dbo.Clavija','U') IS NOT NULL DROP TABLE dbo.Clavija;
-    IF OBJECT_ID('dbo.Intrusion','U') IS NOT NULL DROP TABLE dbo.Intrusion;
-    IF OBJECT_ID('dbo.Extruida','U') IS NOT NULL DROP TABLE dbo.Extruida;
-    IF OBJECT_ID('dbo.Erupcion','U') IS NOT NULL DROP TABLE dbo.Erupcion;
-    IF OBJECT_ID('dbo.Espigo','U') IS NOT NULL DROP TABLE dbo.Espigo;
-    IF OBJECT_ID('dbo.Fractura','U') IS NOT NULL DROP TABLE dbo.Fractura;
-
-    -- 2) Auditoría de versiones (referencia a OdontogramaVersion)
-    IF OBJECT_ID('dbo.OdontogramaVersionAudit','U') IS NOT NULL DROP TABLE dbo.OdontogramaVersionAudit;
-
-    -- 3) Tabla de versiones (referencia a Odontograma)
-    IF OBJECT_ID('dbo.OdontogramaVersion','U') IS NOT NULL DROP TABLE dbo.OdontogramaVersion;
-
-    -- 4) Finalmente las tablas base que referencian Odontograma (si no se eliminaron antes)
-    IF OBJECT_ID('dbo.ProtesisTeeth','U') IS NOT NULL DROP TABLE dbo.ProtesisTeeth;
-    IF OBJECT_ID('dbo.Protesis','U') IS NOT NULL DROP TABLE dbo.Protesis;
-    IF OBJECT_ID('dbo.Transposicion','U') IS NOT NULL DROP TABLE dbo.Transposicion;
-    IF OBJECT_ID('dbo.Diastema','U') IS NOT NULL DROP TABLE dbo.Diastema;
-    IF OBJECT_ID('dbo.DienteCodigo','U') IS NOT NULL DROP TABLE dbo.DienteCodigo;
-    IF OBJECT_ID('dbo.DienteArea','U') IS NOT NULL DROP TABLE dbo.DienteArea;
-    IF OBJECT_ID('dbo.Diente','U') IS NOT NULL DROP TABLE dbo.Diente;
-    IF OBJECT_ID('dbo.OdontogramaAudit','U') IS NOT NULL DROP TABLE dbo.OdontogramaAudit;
-    IF OBJECT_ID('dbo.CatalogoProcedimiento','U') IS NOT NULL DROP TABLE dbo.CatalogoProcedimiento;
-    IF OBJECT_ID('dbo.CatalogoEstadoDiente','U') IS NOT NULL DROP TABLE dbo.CatalogoEstadoDiente;
-
-    -- 5) Última: Odontograma
-    IF OBJECT_ID('dbo.Odontograma','U') IS NOT NULL DROP TABLE dbo.Odontograma;
-    GO
-
-    PRINT 'Bloque de limpieza ampliado ejecutado.';
-    GO

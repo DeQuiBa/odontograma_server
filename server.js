@@ -26,19 +26,22 @@ let pool;
 async function initDb() {
   if (pool) return pool;
   pool = await sql.connect(dbConfig);
+  await ensureHistoriaSchema();
+  await ensureObservacionesSchema();
+  await ensureRaizSchema();
   return pool;
 }
 
 // Optional patients table name (if available)
 const PATIENTS_TABLE = process.env.PATIENTS_TABLE || null;
 
-// Helper: obtener Nro_Cuenta desde Odontograma.Id
+// Helper: obtener Nro_Historia desde Odontograma.Id
 async function getNroCuentaByOdontograma(odontogramaId) {
   if (!pool) await initDb();
   const r = pool.request();
   r.input('id', sql.Int, odontogramaId);
-  const rs = await r.query(`SELECT TOP 1 Nro_Cuenta FROM dbo.Odontograma WHERE Id = @id`);
-  return rs.recordset && rs.recordset[0] ? rs.recordset[0].Nro_Cuenta : null;
+  const rs = await r.query(`SELECT TOP 1 Nro_Historia FROM dbo.Odontograma WHERE Id = @id`);
+  return rs.recordset && rs.recordset[0] ? rs.recordset[0].Nro_Historia : null;
 }
 
 // Helper: write audit rows (best-effort)
@@ -47,11 +50,11 @@ async function logAudit({ odontogramaId = null, nroCuenta = null, accion = '', d
     if (!pool) return;
     const r = pool.request();
     r.input('OdontogramaId', sql.Int, odontogramaId);
-    r.input('Nro_Cuenta', sql.Int, nroCuenta);
+    r.input('Nro_Historia', sql.NVarChar(50), nroCuenta);
     r.input('Accion', sql.NVarChar(50), accion);
     r.input('Detalle', sql.NVarChar(sql.MAX), detalle);
     r.input('Usuario', sql.NVarChar(100), usuario);
-    await r.query(`INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Cuenta, Accion, Detalle, Usuario) VALUES (@OdontogramaId, @Nro_Cuenta, @Accion, @Detalle, @Usuario)`);
+    await r.query(`INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Historia, Accion, Detalle, Usuario) VALUES (@OdontogramaId, @Nro_Historia, @Accion, @Detalle, @Usuario)`);
   } catch (err) {
     console.error('logAudit error', err);
   }
@@ -74,16 +77,120 @@ async function logVersionAudit({ versionId = null, entidad = '', accion = '', cl
   }
 }
 
+// Startup schema migration: mover de Nro_Cuenta a Nro_Historia (nullable) en tablas base
+async function ensureHistoriaSchema() {
+  try {
+    if (!pool) return;
+    const tables = ['Odontograma','Diente','DienteArea','DienteCodigo','Transposicion','Protesis','Diastema','OdontogramaAudit'];
+    for (const t of tables) {
+      const hasHist = await pool.request().query(`SELECT COL_LENGTH('dbo.${t}','Nro_Historia') AS L`);
+      const L = hasHist.recordset && hasHist.recordset[0] ? hasHist.recordset[0].L : null;
+      if (!L) {
+        await pool.request().query(`ALTER TABLE dbo.${t} ADD Nro_Historia NVARCHAR(50) NULL`);
+      }
+      const hasCuenta = await pool.request().query(`SELECT COL_LENGTH('dbo.${t}','Nro_Cuenta') AS L`);
+      const LC = hasCuenta.recordset && hasCuenta.recordset[0] ? hasCuenta.recordset[0].L : null;
+      if (LC) {
+        try { await pool.request().query(`ALTER TABLE dbo.${t} ALTER COLUMN Nro_Cuenta INT NULL`); } catch (_) {}
+      }
+      const idxName = `IX_${t}_Nro_Historia`;
+      const idxExists = await pool.request().query(`SELECT 1 AS X FROM sys.indexes WHERE name='${idxName}' AND object_id=OBJECT_ID('dbo.${t}')`);
+      if (!idxExists.recordset || idxExists.recordset.length === 0) {
+        try { await pool.request().query(`CREATE NONCLUSTERED INDEX ${idxName} ON dbo.${t}(Nro_Historia)`); } catch (_) {}
+      }
+    }
+    console.log('✅ Esquema migrado a Nro_Historia (columns/index)');
+  } catch (err) {
+    console.error('⚠️ ensureHistoriaSchema error', err);
+  }
+}
+
+// Startup schema guard: ensure columns for dbo.Raiz exist (in case script not re-applied)
+async function ensureRaizSchema() {
+  try {
+    if (!pool) return;
+    const r = pool.request();
+    const exists = await r.query("SELECT OBJECT_ID('dbo.Raiz') AS Obj");
+    const objId = exists.recordset && exists.recordset[0] ? exists.recordset[0].Obj : null;
+    if (!objId) {
+      // Table missing entirely: create minimal structure
+      await pool.request().query(`CREATE TABLE dbo.Raiz (
+        Id INT IDENTITY PRIMARY KEY,
+        OdontogramaVersionId INT NOT NULL,
+        NumeroDiente TINYINT NOT NULL,
+        Configuracion TINYINT NOT NULL DEFAULT(1),
+        Triangulo1Activo BIT NOT NULL DEFAULT(0),
+        Triangulo2Activo BIT NOT NULL DEFAULT(0),
+        Triangulo3Activo BIT NOT NULL DEFAULT(0),
+        Activo BIT NOT NULL DEFAULT(1),
+        Metadata NVARCHAR(MAX) NULL,
+        Fecha_Creacion DATETIME2 NOT NULL DEFAULT(GETDATE()),
+        Usuario_Creacion NVARCHAR(100) NULL,
+        Fecha_Modificacion DATETIME2 NULL,
+        Usuario_Modificacion NVARCHAR(100) NULL,
+        CONSTRAINT FK_Raiz_Version FOREIGN KEY (OdontogramaVersionId) REFERENCES dbo.OdontogramaVersion(Id) ON DELETE CASCADE,
+        CONSTRAINT UQ_Raiz UNIQUE (OdontogramaVersionId, NumeroDiente)
+      );`);
+      await pool.request().query("CREATE INDEX IX_Raiz_Version ON dbo.Raiz(OdontogramaVersionId)");
+      console.log('✅ Tabla dbo.Raiz creada');
+      return;
+    }
+    // Check each column
+    const colsRs = await pool.request().query("SELECT name FROM sys.columns WHERE object_id = OBJECT_ID('dbo.Raiz')");
+    const have = new Set((colsRs.recordset || []).map(c => c.name));
+    const alters = [];
+    if (!have.has('Configuracion')) alters.push("ALTER TABLE dbo.Raiz ADD Configuracion TINYINT NOT NULL DEFAULT(1)");
+    if (!have.has('Triangulo1Activo')) alters.push("ALTER TABLE dbo.Raiz ADD Triangulo1Activo BIT NOT NULL DEFAULT(0)");
+    if (!have.has('Triangulo2Activo')) alters.push("ALTER TABLE dbo.Raiz ADD Triangulo2Activo BIT NOT NULL DEFAULT(0)");
+    if (!have.has('Triangulo3Activo')) alters.push("ALTER TABLE dbo.Raiz ADD Triangulo3Activo BIT NOT NULL DEFAULT(0)");
+    if (!have.has('Activo')) alters.push("ALTER TABLE dbo.Raiz ADD Activo BIT NOT NULL DEFAULT(1)");
+    if (!have.has('Metadata')) alters.push("ALTER TABLE dbo.Raiz ADD Metadata NVARCHAR(MAX) NULL");
+    if (!have.has('Fecha_Creacion')) alters.push("ALTER TABLE dbo.Raiz ADD Fecha_Creacion DATETIME2 NOT NULL DEFAULT(GETDATE())");
+    if (!have.has('Usuario_Creacion')) alters.push("ALTER TABLE dbo.Raiz ADD Usuario_Creacion NVARCHAR(100) NULL");
+    if (!have.has('Fecha_Modificacion')) alters.push("ALTER TABLE dbo.Raiz ADD Fecha_Modificacion DATETIME2 NULL");
+    if (!have.has('Usuario_Modificacion')) alters.push("ALTER TABLE dbo.Raiz ADD Usuario_Modificacion NVARCHAR(100) NULL");
+    for (const stmt of alters) {
+      await pool.request().query(stmt);
+    }
+    if (alters.length) console.log(`🔧 dbo.Raiz columnas agregadas: ${alters.length}`);
+  } catch (err) {
+    console.error('⚠️ Error asegurando esquema dbo.Raiz', err);
+  }
+}
+
+// Startup schema guard: ensure Observaciones column exists where API writes it
+async function ensureObservacionesSchema() {
+  try {
+    if (!pool) return;
+    const targets = [
+      { table: 'Odontograma', type: 'NVARCHAR(MAX)' },
+      { table: 'DienteArea', type: 'NVARCHAR(500)' },
+      { table: 'Protesis', type: 'NVARCHAR(500)' },
+      { table: 'Diastema', type: 'NVARCHAR(500)' }
+    ];
+    for (const t of targets) {
+      const rs = await pool.request().query(`SELECT COL_LENGTH('dbo.${t.table}','Observaciones') AS L`);
+      const L = rs.recordset && rs.recordset[0] ? rs.recordset[0].L : null;
+      if (!L) {
+        await pool.request().query(`ALTER TABLE dbo.${t.table} ADD Observaciones ${t.type} NULL`);
+        console.log(`🔧 dbo.${t.table}.Observaciones agregado`);
+      }
+    }
+  } catch (err) {
+    console.error('⚠️ ensureObservacionesSchema error', err);
+  }
+}
+
 // --- Endpoints ---
 // Middleware: auto-resolver nro_cuenta para POST bajo /api/odontograma/:id/* si falta
 app.use('/api/odontograma/:id', async (req, res, next) => {
   try {
-    if (req.method === 'POST' && (req.body?.nro_cuenta === undefined || req.body?.nro_cuenta === null)) {
+    if (req.method === 'POST' && (req.body?.nroHistoria === undefined || req.body?.nroHistoria === null)) {
       const odontogramaId = parseInt(req.params.id, 10);
       if (odontogramaId) {
         const nro = await getNroCuentaByOdontograma(odontogramaId);
         if (nro !== null && nro !== undefined) {
-          req.body = { ...(req.body || {}), nro_cuenta: nro };
+          req.body = { ...(req.body || {}), nroHistoria: nro };
         }
       }
     }
@@ -128,17 +235,10 @@ app.get('/api/historia/:nroHistoria/existe', async (req, res) => {
     const listRs = await pool.request()
       .input('hist', sql.NVarChar(50), nroHistoria)
       .query(`
-        SELECT o.Id, o.Nro_Cuenta, o.Activo, o.Fecha_Creacion
+        SELECT o.Id, o.Nro_Historia, o.Activo, o.Fecha_Creacion
         FROM dbo.Odontograma o
-        JOIN dbo.Atenciones a ON a.IdAtencion = o.Nro_Cuenta
-        JOIN dbo.Pacientes p ON p.IdPaciente = a.IdPaciente
-        WHERE p.NroHistoriaClinica = @hist
-        UNION
-        SELECT o.Id, o.Nro_Cuenta, o.Activo, o.Fecha_Creacion
-        FROM dbo.Odontograma o
-        JOIN dbo.Pacientes p ON p.IdPaciente = o.Nro_Cuenta
-        WHERE p.NroHistoriaClinica = @hist
-        ORDER BY Fecha_Creacion DESC, Id DESC
+        WHERE o.Nro_Historia = @hist
+        ORDER BY o.Fecha_Creacion DESC, o.Id DESC
       `);
     const odontogramas = listRs.recordset || [];
     const odontogramasCount = odontogramas.length;
@@ -182,17 +282,10 @@ app.get('/api/historia/:nroHistoria/odontogramas', async (req, res) => {
     const rs = await pool.request()
       .input('hist', sql.NVarChar(50), nroHistoria)
       .query(`
-        SELECT o.Id, o.Nro_Cuenta, o.Fecha_Creacion, o.Activo
+        SELECT o.Id, o.Nro_Historia, o.Fecha_Creacion, o.Activo
         FROM dbo.Odontograma o
-        JOIN dbo.Atenciones a ON a.IdAtencion = o.Nro_Cuenta
-        JOIN dbo.Pacientes p ON p.IdPaciente = a.IdPaciente
-        WHERE p.NroHistoriaClinica = @hist
-        UNION
-        SELECT o.Id, o.Nro_Cuenta, o.Fecha_Creacion, o.Activo
-        FROM dbo.Odontograma o
-        JOIN dbo.Pacientes p ON p.IdPaciente = o.Nro_Cuenta
-        WHERE p.NroHistoriaClinica = @hist
-        ORDER BY Fecha_Creacion DESC, Id DESC
+        WHERE o.Nro_Historia = @hist
+        ORDER BY o.Fecha_Creacion DESC, o.Id DESC
       `);
     res.json(rs.recordset || []);
   } catch (err) {
@@ -205,10 +298,10 @@ app.get('/api/historia/:nroHistoria/odontogramas', async (req, res) => {
 app.get('/api/odontogramas/:nroCuenta', async (req, res) => {
   try {
     await initDb();
-    const nroCuenta = parseInt(req.params.nroCuenta, 10);
+    const nroHistoria = (req.params.nroCuenta || '').toString();
     const r = pool.request();
-    r.input('nroCuenta', sql.Int, nroCuenta);
-    const result = await r.query(`SELECT Id, Nro_Cuenta, Version, Observaciones, Fecha_Creacion, Usuario_Creacion FROM dbo.Odontograma WHERE Nro_Cuenta = @nroCuenta ORDER BY Fecha_Creacion DESC`);
+    r.input('nroHistoria', sql.NVarChar(50), nroHistoria);
+    const result = await r.query(`SELECT Id, Nro_Historia, Version, Observaciones, Fecha_Creacion, Usuario_Creacion FROM dbo.Odontograma WHERE Nro_Historia = @nroHistoria ORDER BY Fecha_Creacion DESC`);
     res.json(result.recordset);
   } catch (err) {
     console.error(err);
@@ -220,19 +313,20 @@ app.get('/api/odontogramas/:nroCuenta', async (req, res) => {
 app.post('/api/odontograma', async (req, res) => {
   try {
     await initDb();
-    const { nroCuenta, fechaVisita, tipoVisita, observaciones, usuario, metadata = null } = req.body;
-    if (!nroCuenta) return res.status(400).json({ error: 'nroCuenta requerido' });
+    const { nroHistoria, nroCuenta, fechaVisita, tipoVisita, observaciones, usuario, metadata = null } = req.body;
+    const historia = nroHistoria ?? (nroCuenta ? String(nroCuenta) : null);
+    if (!historia) return res.status(400).json({ error: 'nroHistoria requerido' });
     const tr = new sql.Transaction(pool);
     await tr.begin();
     try {
       const r = tr.request();
-      r.input('Nro_Cuenta', sql.Int, nroCuenta);
+      r.input('Nro_Historia', sql.NVarChar(50), historia);
       r.input('Fecha_Visita', sql.DateTime2, fechaVisita || null);
       r.input('Tipo_Visita', sql.NVarChar(50), tipoVisita || null);
       r.input('Observaciones', sql.NVarChar(sql.MAX), observaciones || null);
       r.input('Usuario', sql.NVarChar(100), usuario || null);
       r.input('Meta', sql.NVarChar(sql.MAX), metadata);
-      const insert = await r.query(`INSERT INTO dbo.Odontograma (Nro_Cuenta, Fecha_Visita, Tipo_Visita, Observaciones, Usuario_Creacion, Metadata) VALUES (@Nro_Cuenta, @Fecha_Visita, @Tipo_Visita, @Observaciones, @Usuario, @Meta); SELECT SCOPE_IDENTITY() AS Id;`);
+      const insert = await r.query(`INSERT INTO dbo.Odontograma (Nro_Historia, Fecha_Visita, Tipo_Visita, Observaciones, Usuario_Creacion, Metadata) VALUES (@Nro_Historia, @Fecha_Visita, @Tipo_Visita, @Observaciones, @Usuario, @Meta); SELECT SCOPE_IDENTITY() AS Id;`);
       const id = insert.recordset && insert.recordset[0] ? insert.recordset[0].Id : null;
       // Crear versión inicial 1 sólo si no existe
       if (id) {
@@ -365,7 +459,7 @@ app.get('/api/version/:versionId/full', async (req, res) => {
     const r = pool.request();
     r.input('vid', sql.Int, versionId);
 
-    const [versionRow, fracturas, espigos, erupciones, extruidas, intrusiones, giroversiones, clavijas, geminaciones, supernumerarios, impactaciones, endodoncias, coronasTemp, coronas, restauraciones, fusiones, edentulos, protesisJoin, implantes, aparatosJoin, aparatosRemovibles, arcos, lineas, flechas, simbolos, anotaciones, audits] = await Promise.all([
+    const [versionRow, fracturas, espigos, erupciones, extruidas, intrusiones, giroversiones, clavijas, geminaciones, supernumerarios, impactaciones, endodoncias, coronasTemp, coronas, restauraciones, fusiones, edentulos, protesisJoin, implantes, aparatosJoin, aparatosRemovibles, arcos, lineas, flechas, simbolos, anotaciones, audits, raices] = await Promise.all([
       r.query(`SELECT TOP 1 * FROM dbo.OdontogramaVersion WHERE Id = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Fractura WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Espigo WHERE OdontogramaVersionId = @vid`),
@@ -392,7 +486,8 @@ app.get('/api/version/:versionId/full', async (req, res) => {
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Flecha WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.SimboloClinico WHERE OdontogramaVersionId = @vid`),
       pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Anotacion WHERE OdontogramaVersionId = @vid`),
-      pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.OdontogramaVersionAudit WHERE OdontogramaVersionId = @vid ORDER BY Fecha DESC`)
+      pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.OdontogramaVersionAudit WHERE OdontogramaVersionId = @vid ORDER BY Fecha DESC`),
+      pool.request().input('vid', sql.Int, versionId).query(`SELECT * FROM dbo.Raiz WHERE OdontogramaVersionId = @vid`)
     ]);
 
     if (!versionRow.recordset || versionRow.recordset.length === 0) return res.status(404).json({ error: 'Version no encontrada' });
@@ -441,7 +536,8 @@ app.get('/api/version/:versionId/full', async (req, res) => {
       flechas: flechas.recordset || [],
       simbolos: simbolos.recordset || [],
       anotaciones: anotaciones.recordset || [],
-      audit: audits.recordset || []
+      audit: audits.recordset || [],
+      raices: raices.recordset || []
     });
   } catch (err) {
     console.error(err);
@@ -517,19 +613,20 @@ app.post('/api/odontograma/:id/diastema', async (req, res) => {
   try {
     await initDb();
     const odontogramaId = parseInt(req.params.id, 10);
-    const { nro_cuenta, diente_left, diente_right, tamano = null, observaciones = null, usuario = null } = req.body || {};
+    const { nroHistoria, diente_left, diente_right, tamano = null, observaciones = null, usuario = null } = req.body || {};
     if (!odontogramaId || !diente_left || !diente_right) return res.status(400).json({ error: 'missing fields' });
+    const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
     const r = pool.request();
     r.input('OdontogramaId', sql.Int, odontogramaId);
-    r.input('Nro_Cuenta', sql.Int, nro_cuenta || null);
+    r.input('Nro_Historia', sql.NVarChar(50), historia || null);
     r.input('Left', sql.TinyInt, diente_left);
     r.input('Right', sql.TinyInt, diente_right);
     r.input('Tam', sql.Decimal(6,2), tamano);
     r.input('Obs', sql.NVarChar(500), observaciones);
     r.input('Usuario', sql.NVarChar(100), usuario);
-    const ins = await r.query(`INSERT INTO dbo.Diastema (OdontogramaId, Nro_Cuenta, Diente_Left, Diente_Right, Tamano, Observaciones, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Cuenta, @Left, @Right, @Tam, @Obs, @Usuario); SELECT SCOPE_IDENTITY() AS Id;`);
+    const ins = await r.query(`INSERT INTO dbo.Diastema (OdontogramaId, Nro_Historia, Diente_Left, Diente_Right, Tamano, Observaciones, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Historia, @Left, @Right, @Tam, @Obs, @Usuario); SELECT SCOPE_IDENTITY() AS Id;`);
     const id = ins.recordset && ins.recordset[0] ? ins.recordset[0].Id : null;
-    await logAudit({ odontogramaId, nroCuenta: nro_cuenta, accion: 'INSERT_DIASTEMA', detalle: `L=${diente_left};R=${diente_right};Tam=${tamano}`, usuario });
+    await logAudit({ odontogramaId, nroCuenta: historia, accion: 'INSERT_DIASTEMA', detalle: `L=${diente_left};R=${diente_right};Tam=${tamano}`, usuario });
     res.status(201).json({ id });
   } catch (err) {
     console.error(err);
@@ -573,14 +670,15 @@ app.post('/api/odontograma/:id/protesis', async (req, res) => {
   try {
     await initDb();
     const odontogramaId = parseInt(req.params.id, 10);
-    const { nro_cuenta, tipo, subTipo = null, posicion = null, color = null, observaciones = null, metadata = null, usuario = null, dientes = [] } = req.body || {};
+    const { nroHistoria, tipo, subTipo = null, posicion = null, color = null, observaciones = null, metadata = null, usuario = null, dientes = [] } = req.body || {};
     if (!odontogramaId || !tipo) return res.status(400).json({ error: 'missing fields' });
+    const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
     const tr = new sql.Transaction(pool);
     await tr.begin();
     try {
       const r = tr.request();
       r.input('OdontogramaId', sql.Int, odontogramaId);
-      r.input('Nro_Cuenta', sql.Int, nro_cuenta || null);
+      r.input('Nro_Historia', sql.NVarChar(50), historia || null);
       r.input('Tipo', sql.NVarChar(50), tipo);
       r.input('SubTipo', sql.NVarChar(100), subTipo);
       r.input('Posicion', sql.NVarChar(20), posicion);
@@ -588,7 +686,7 @@ app.post('/api/odontograma/:id/protesis', async (req, res) => {
       r.input('Obs', sql.NVarChar(500), observaciones);
       r.input('Meta', sql.NVarChar(sql.MAX), metadata);
       r.input('Usuario', sql.NVarChar(100), usuario);
-      const ins = await r.query(`INSERT INTO dbo.Protesis (OdontogramaId, Nro_Cuenta, Tipo, SubTipo, Posicion, Color, Observaciones, Metadata, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Cuenta, @Tipo, @SubTipo, @Posicion, @Color, @Obs, @Meta, @Usuario); SELECT SCOPE_IDENTITY() AS Id;`);
+      const ins = await r.query(`INSERT INTO dbo.Protesis (OdontogramaId, Nro_Historia, Tipo, SubTipo, Posicion, Color, Observaciones, Metadata, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Historia, @Tipo, @SubTipo, @Posicion, @Color, @Obs, @Meta, @Usuario); SELECT SCOPE_IDENTITY() AS Id;`);
       const protesisId = ins.recordset && ins.recordset[0] ? ins.recordset[0].Id : null;
       for (const d of (Array.isArray(dientes) ? dientes : [])) {
         const rr = tr.request();
@@ -597,7 +695,7 @@ app.post('/api/odontograma/:id/protesis', async (req, res) => {
         await rr.query(`INSERT INTO dbo.ProtesisTeeth (ProtesisId, NumeroDiente) VALUES (@pid, @num)`);
       }
       await tr.commit();
-      await logAudit({ odontogramaId, nroCuenta: nro_cuenta, accion: 'INSERT_PROTESIS', detalle: `Tipo=${tipo};Dientes=${(dientes||[]).join(',')}`, usuario });
+      await logAudit({ odontogramaId, nroCuenta: historia, accion: 'INSERT_PROTESIS', detalle: `Tipo=${tipo};Dientes=${(dientes||[]).join(',')}`, usuario });
       res.status(201).json({ id: protesisId });
     } catch (e) {
       try { await tr.rollback(); } catch (_) {}
@@ -1223,24 +1321,116 @@ app.delete('/api/version/:versionId/anotacion/:id', async (req, res) => {
   }
 });
 
+// ==========================
+// Raices (triángulos de raíces) - Upsert por diente/version
+// ==========================
+app.post('/api/version/:versionId/raiz', async (req, res) => {
+  try {
+    await initDb();
+    const versionId = parseInt(req.params.versionId, 10);
+    const { numeroDiente, configuracion, triangulo1Activo = false, triangulo2Activo = false, triangulo3Activo = false, metadata = null, usuario = null } = req.body || {};
+    if (!versionId || !numeroDiente || !configuracion) return res.status(400).json({ error: 'missing fields' });
+    const r = pool.request();
+    r.input('vid', sql.Int, versionId);
+    r.input('num', sql.TinyInt, numeroDiente);
+    r.input('config', sql.TinyInt, configuracion);
+    r.input('t1', sql.Bit, triangulo1Activo ? 1 : 0);
+    r.input('t2', sql.Bit, triangulo2Activo ? 1 : 0);
+    r.input('t3', sql.Bit, triangulo3Activo ? 1 : 0);
+    r.input('metadata', sql.NVarChar(sql.MAX), metadata);
+    r.input('usuario', sql.NVarChar(100), usuario);
+    const upsert = `IF EXISTS (SELECT 1 FROM dbo.Raiz WHERE OdontogramaVersionId=@vid AND NumeroDiente=@num)
+      BEGIN
+        UPDATE dbo.Raiz SET Configuracion=@config, Triangulo1Activo=@t1, Triangulo2Activo=@t2, Triangulo3Activo=@t3, Metadata=@metadata, Fecha_Modificacion=GETDATE(), Usuario_Modificacion=@usuario WHERE OdontogramaVersionId=@vid AND NumeroDiente=@num;
+        SELECT Id FROM dbo.Raiz WHERE OdontogramaVersionId=@vid AND NumeroDiente=@num;
+      END
+      ELSE
+      BEGIN
+        INSERT INTO dbo.Raiz (OdontogramaVersionId, NumeroDiente, Configuracion, Triangulo1Activo, Triangulo2Activo, Triangulo3Activo, Metadata, Usuario_Creacion) VALUES (@vid, @num, @config, @t1, @t2, @t3, @metadata, @usuario);
+        SELECT SCOPE_IDENTITY() AS Id;
+      END`;
+    const rs = await r.query(upsert);
+    const id = rs.recordset && rs.recordset[0] ? rs.recordset[0].Id : null;
+    await logVersionAudit({ versionId, entidad: 'Raiz', accion: 'UPSERT', clave: `Id=${id}`, detalle: `Diente=${numeroDiente};Cfg=${configuracion}`, usuario });
+    res.status(201).json({ id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error guardando raiz' });
+  }
+});
+
+app.get('/api/version/:versionId/raices', async (req, res) => {
+  try {
+    await initDb();
+    const versionId = parseInt(req.params.versionId, 10);
+    if (!versionId) return res.status(400).json({ error: 'invalid version id' });
+    const r = pool.request();
+    r.input('vid', sql.Int, versionId);
+    const rs = await r.query(`SELECT * FROM dbo.Raiz WHERE OdontogramaVersionId=@vid`);
+    res.json(rs.recordset || []);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error obteniendo raices' });
+  }
+});
+
+app.delete('/api/version/:versionId/raiz/:id', async (req, res) => {
+  try {
+    await initDb();
+    const versionId = parseInt(req.params.versionId, 10);
+    const id = parseInt(req.params.id, 10);
+    const r = pool.request();
+    r.input('id', sql.Int, id);
+    await r.query(`DELETE FROM dbo.Raiz WHERE Id=@id`);
+    await logVersionAudit({ versionId, entidad: 'Raiz', accion: 'DELETE', clave: `Id=${id}` });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error eliminando raiz' });
+  }
+});
+
+// ==========================
+// Actualizar Observaciones de Odontograma
+// ==========================
+app.post('/api/odontograma/:id/observaciones', async (req, res) => {
+  try {
+    await initDb();
+    const odontogramaId = parseInt(req.params.id, 10);
+    const { observaciones, usuario = null } = req.body || {};
+    if (!odontogramaId) return res.status(400).json({ error: 'invalid odontograma id' });
+    const r = pool.request();
+    r.input('id', sql.Int, odontogramaId);
+    r.input('obs', sql.NVarChar(sql.MAX), observaciones || null);
+    r.input('usuario', sql.NVarChar(100), usuario);
+    await r.query(`UPDATE dbo.Odontograma SET Observaciones=@obs, Fecha_Modificacion=GETDATE(), Usuario_Modificacion=@usuario WHERE Id=@id`);
+    await logAudit({ odontogramaId, accion: 'UPDATE_OBSERVACIONES', detalle: observaciones ? `Len=${observaciones.length}` : 'NULL', usuario });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error actualizando observaciones' });
+  }
+});
+
 // Save a diente codigo
 app.post('/api/odontograma/:id/diente/codigo', async (req, res) => {
   try {
     await initDb();
     const odontogramaId = parseInt(req.params.id, 10);
-    const { nro_cuenta, numeroDiente, codigo, descripcion, color, usuario } = req.body;
+    const { nroHistoria, numeroDiente, codigo, descripcion, color, usuario } = req.body;
     if (!odontogramaId || !numeroDiente || !codigo) return res.status(400).json({ error: 'missing required fields' });
+    const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
     const r = pool.request();
     r.input('OdontogramaId', sql.Int, odontogramaId);
-    r.input('Nro_Cuenta', sql.Int, nro_cuenta || null);
+    r.input('Nro_Historia', sql.NVarChar(50), historia || null);
     r.input('NumeroDiente', sql.TinyInt, numeroDiente);
     r.input('Codigo', sql.NVarChar(50), codigo);
     r.input('Descripcion', sql.NVarChar(250), descripcion || null);
     r.input('Color', sql.NVarChar(30), color || null);
     r.input('Usuario', sql.NVarChar(100), usuario || null);
-    const insert = await r.query(`INSERT INTO dbo.DienteCodigo (OdontogramaId, Nro_Cuenta, NumeroDiente, Codigo, Descripcion, Color, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Cuenta, @NumeroDiente, @Codigo, @Descripcion, @Color, @Usuario); SELECT SCOPE_IDENTITY() AS Id;`);
+    const insert = await r.query(`INSERT INTO dbo.DienteCodigo (OdontogramaId, Nro_Historia, NumeroDiente, Codigo, Descripcion, Color, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Historia, @NumeroDiente, @Codigo, @Descripcion, @Color, @Usuario); SELECT SCOPE_IDENTITY() AS Id;`);
     const newId = insert.recordset && insert.recordset[0] ? insert.recordset[0].Id : null;
-    await logAudit({ odontogramaId, nroCuenta: nro_cuenta, accion: 'ADD_CODIGO', detalle: `Diente=${numeroDiente};Codigo=${codigo}`, usuario });
+    await logAudit({ odontogramaId, nroCuenta: historia, accion: 'ADD_CODIGO', detalle: `Diente=${numeroDiente};Codigo=${codigo}`, usuario });
     res.status(201).json({ id: newId });
   } catch (err) {
     console.error(err);
@@ -1253,14 +1443,15 @@ app.post('/api/odontograma/:id/diente/area', async (req, res) => {
   try {
     await initDb();
     const odontogramaId = parseInt(req.params.id, 10);
-    const { nro_cuenta, numeroDiente, area, estado, color, observaciones, usuario } = req.body;
+    const { nroHistoria, numeroDiente, area, estado, color, observaciones, usuario } = req.body;
     if (!odontogramaId || !numeroDiente || !area) return res.status(400).json({ error: 'missing required fields' });
+    const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
     const trx = new sql.Transaction(pool);
     await trx.begin();
     try {
       const tr = trx.request();
       tr.input('OdontogramaId', sql.Int, odontogramaId);
-      tr.input('Nro_Cuenta', sql.Int, nro_cuenta || null);
+      tr.input('Nro_Historia', sql.NVarChar(50), historia || null);
       tr.input('NumeroDiente', sql.TinyInt, numeroDiente);
       tr.input('Area', sql.NVarChar(50), area);
       tr.input('Estado', sql.NVarChar(100), estado || null);
@@ -1273,11 +1464,11 @@ app.post('/api/odontograma/:id/diente/area', async (req, res) => {
         END
         ELSE
         BEGIN
-          INSERT INTO dbo.DienteArea (OdontogramaId, Nro_Cuenta, NumeroDiente, Area, Estado, Color, Observaciones, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Cuenta, @NumeroDiente, @Area, @Estado, @Color, @Observaciones, @Usuario)
+          INSERT INTO dbo.DienteArea (OdontogramaId, Nro_Historia, NumeroDiente, Area, Estado, Color, Observaciones, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Historia, @NumeroDiente, @Area, @Estado, @Color, @Observaciones, @Usuario)
         END`;
       await tr.query(upsertSql);
       await trx.commit();
-      await logAudit({ odontogramaId, nroCuenta: nro_cuenta, accion: 'UPSERT_DIENTE_AREA', detalle: `Diente=${numeroDiente};Area=${area};Estado=${estado}`, usuario });
+      await logAudit({ odontogramaId, nroCuenta: historia, accion: 'UPSERT_DIENTE_AREA', detalle: `Diente=${numeroDiente};Area=${area};Estado=${estado}`, usuario });
       res.json({ ok: true });
     } catch (err) {
       try { await trx.rollback(); } catch (e) {}
@@ -1294,14 +1485,15 @@ app.post('/api/odontograma/:id/diente/extraccion', async (req, res) => {
   try {
     await initDb();
     const odontogramaId = parseInt(req.params.id, 10);
-    const { nro_cuenta, numeroDiente, usuario } = req.body;
+    const { nroHistoria, numeroDiente, usuario } = req.body;
     if (!odontogramaId || !numeroDiente) return res.status(400).json({ error: 'missing required fields' });
+    const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
     const trx = new sql.Transaction(pool);
     await trx.begin();
     try {
       const tr = trx.request();
       tr.input('OdontogramaId', sql.Int, odontogramaId);
-      tr.input('Nro_Cuenta', sql.Int, nro_cuenta || null);
+      tr.input('Nro_Historia', sql.NVarChar(50), historia || null);
       tr.input('NumeroDiente', sql.TinyInt, numeroDiente);
       tr.input('Usuario', sql.NVarChar(100), usuario || null);
       const upsert = `IF EXISTS (SELECT 1 FROM dbo.Diente WHERE OdontogramaId=@OdontogramaId AND NumeroDiente=@NumeroDiente)
@@ -1310,11 +1502,11 @@ app.post('/api/odontograma/:id/diente/extraccion', async (req, res) => {
         END
         ELSE
         BEGIN
-          INSERT INTO dbo.Diente (OdontogramaId, Nro_Cuenta, NumeroDiente, Estado, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Cuenta, @NumeroDiente, 'extraccion', @Usuario)
+          INSERT INTO dbo.Diente (OdontogramaId, Nro_Historia, NumeroDiente, Estado, Usuario_Creacion) VALUES (@OdontogramaId, @Nro_Historia, @NumeroDiente, 'extraccion', @Usuario)
         END`;
       await tr.query(upsert);
       await trx.commit();
-      await logAudit({ odontogramaId, nroCuenta: nro_cuenta, accion: 'MARK_EXTRACCION', detalle: `Diente=${numeroDiente}`, usuario });
+      await logAudit({ odontogramaId, nroCuenta: historia, accion: 'MARK_EXTRACCION', detalle: `Diente=${numeroDiente}`, usuario });
       res.json({ ok: true });
     } catch (err) {
       try { await trx.rollback(); } catch (e) {}
@@ -1381,16 +1573,17 @@ app.post('/api/odontograma/:id/transposicion', async (req, res) => {
   try {
     await initDb();
     const odontogramaId = parseInt(req.params.id, 10);
-    const { diente_from, diente_to, color, observaciones, usuario, nro_cuenta } = req.body;
+    const { diente_from, diente_to, color, observaciones, usuario, nroHistoria } = req.body;
     const r = pool.request();
     r.input('odontogramaId', sql.Int, odontogramaId);
-    r.input('nroCuenta', sql.Int, nro_cuenta || null);
+    const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
+    r.input('nroHistoria', sql.NVarChar(50), historia || null);
     r.input('from', sql.TinyInt, diente_from);
     r.input('to', sql.TinyInt, diente_to);
     r.input('color', sql.NVarChar(30), color || null);
     r.input('obs', sql.NVarChar(500), observaciones || null);
     r.input('usuario', sql.NVarChar(100), usuario || null);
-    await r.query(`INSERT INTO dbo.Transposicion (OdontogramaId, Nro_Cuenta, Diente_From, Diente_To, Color, Observaciones, Usuario_Creacion) VALUES (@odontogramaId, @nroCuenta, @from, @to, @color, @obs, @usuario)`);
+    await r.query(`INSERT INTO dbo.Transposicion (OdontogramaId, Nro_Historia, Diente_From, Diente_To, Color, Observaciones, Usuario_Creacion) VALUES (@odontogramaId, @nroHistoria, @from, @to, @color, @obs, @usuario)`);
     res.status(201).json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -1434,13 +1627,13 @@ app.delete('/api/odontograma/:id/transposicion/:transId', async (req, res) => {
 app.get('/api/odontograma/historico/:nroCuenta', async (req, res) => {
   try {
     await initDb();
-    const nroCuenta = parseInt(req.params.nroCuenta, 10);
+    const nroHistoria = (req.params.nroCuenta || '').toString();
     const r = pool.request();
-    r.input('nroCuenta', sql.Int, nroCuenta);
+    r.input('nroHistoria', sql.NVarChar(50), nroHistoria);
     const q = `
       SELECT 
         o.Id,
-        o.Nro_Cuenta,
+        o.Nro_Historia,
         o.Version,
         o.Fecha_Visita,
         o.Tipo_Visita,
@@ -1450,7 +1643,7 @@ app.get('/api/odontograma/historico/:nroCuenta', async (req, res) => {
         (SELECT COUNT(*) FROM dbo.OdontogramaVersion v WHERE v.OdontogramaId = o.Id) AS Versiones,
         RIGHT('0000000000' + CAST(o.Id AS VARCHAR(10)), 10) AS Correlativo
       FROM dbo.Odontograma o
-      WHERE o.Nro_Cuenta = @nroCuenta
+      WHERE o.Nro_Historia = @nroHistoria
       ORDER BY o.Fecha_Creacion DESC`;
     const rs = await r.query(q);
     res.json(rs.recordset || []);
@@ -1464,16 +1657,16 @@ app.get('/api/odontograma/historico/:nroCuenta', async (req, res) => {
 app.get('/api/odontograma/historico/:nroCuenta/:correlativo', async (req, res) => {
   try {
     await initDb();
-    const nroCuenta = parseInt(req.params.nroCuenta, 10);
+    const nroHistoria = (req.params.nroCuenta || '').toString();
     const { correlativo } = req.params;
     const id = parseInt(correlativo, 10); // admite '0000000123' => 123
-    if (!nroCuenta || !id) return res.status(400).json({ error: 'parámetros inválidos' });
+    if (!nroHistoria || !id) return res.status(400).json({ error: 'parámetros inválidos' });
 
     // Validar que pertenezca a la cuenta
     const r0 = pool.request();
-    r0.input('nroCuenta', sql.Int, nroCuenta);
+    r0.input('nroHistoria', sql.NVarChar(50), nroHistoria);
     r0.input('id', sql.Int, id);
-    const e = await r0.query(`SELECT TOP 1 Id FROM dbo.Odontograma WHERE Nro_Cuenta = @nroCuenta AND Id = @id`);
+    const e = await r0.query(`SELECT TOP 1 Id FROM dbo.Odontograma WHERE Nro_Historia = @nroHistoria AND Id = @id`);
     if (!e.recordset || e.recordset.length === 0) return res.status(404).json({ error: 'Odontograma no encontrado para la cuenta indicada' });
 
     // Reutilizar la carga "full" del odontograma
