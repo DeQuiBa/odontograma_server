@@ -29,6 +29,7 @@ async function initDb() {
   await ensureHistoriaSchema();
   await ensureObservacionesSchema();
   await ensureRaizSchema();
+  await ensureCodigoFkDisabled();
   return pool;
 }
 
@@ -57,6 +58,21 @@ async function logAudit({ odontogramaId = null, nroCuenta = null, accion = '', d
     await r.query(`INSERT INTO dbo.OdontogramaAudit (OdontogramaId, Nro_Historia, Accion, Detalle, Usuario) VALUES (@OdontogramaId, @Nro_Historia, @Accion, @Detalle, @Usuario)`);
   } catch (err) {
     console.error('logAudit error', err);
+  }
+}
+
+// Startup guard: disable FK from DienteCodigo to CatalogoProcedimiento to allow external code sources
+async function ensureCodigoFkDisabled() {
+  try {
+    if (!pool) return;
+    const rs = await pool.request().query(`SELECT name FROM sys.foreign_keys WHERE name = 'FK_DienteCodigo_Procedimiento' AND parent_object_id = OBJECT_ID('dbo.DienteCodigo')`);
+    const exists = rs.recordset && rs.recordset.length > 0;
+    if (exists) {
+      await pool.request().query(`ALTER TABLE dbo.DienteCodigo DROP CONSTRAINT FK_DienteCodigo_Procedimiento`);
+      console.log('🔧 FK_DienteCodigo_Procedimiento eliminado (liberado para fuentes externas)');
+    }
+  } catch (err) {
+    console.error('⚠️ No se pudo eliminar FK_DienteCodigo_Procedimiento', err);
   }
 }
 
@@ -1420,9 +1436,10 @@ app.post('/api/odontograma/:id/diente/codigo', async (req, res) => {
     const { nroHistoria, numeroDiente, codigo, descripcion, color, usuario } = req.body;
     if (!odontogramaId || !numeroDiente || !codigo) return res.status(400).json({ error: 'missing required fields' });
     const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
+    if (!historia) return res.status(400).json({ error: 'Nro_Historia requerido (no encontrado en Odontograma y no enviado en la solicitud)' });
     const r = pool.request();
     r.input('OdontogramaId', sql.Int, odontogramaId);
-    r.input('Nro_Historia', sql.NVarChar(50), historia || null);
+    r.input('Nro_Historia', sql.NVarChar(50), historia);
     r.input('NumeroDiente', sql.TinyInt, numeroDiente);
     r.input('Codigo', sql.NVarChar(50), codigo);
     r.input('Descripcion', sql.NVarChar(250), descripcion || null);
@@ -1446,12 +1463,13 @@ app.post('/api/odontograma/:id/diente/area', async (req, res) => {
     const { nroHistoria, numeroDiente, area, estado, color, observaciones, usuario } = req.body;
     if (!odontogramaId || !numeroDiente || !area) return res.status(400).json({ error: 'missing required fields' });
     const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
+    if (!historia) return res.status(400).json({ error: 'Nro_Historia requerido (no encontrado en Odontograma y no enviado en la solicitud)' });
     const trx = new sql.Transaction(pool);
     await trx.begin();
     try {
       const tr = trx.request();
       tr.input('OdontogramaId', sql.Int, odontogramaId);
-      tr.input('Nro_Historia', sql.NVarChar(50), historia || null);
+      tr.input('Nro_Historia', sql.NVarChar(50), historia);
       tr.input('NumeroDiente', sql.TinyInt, numeroDiente);
       tr.input('Area', sql.NVarChar(50), area);
       tr.input('Estado', sql.NVarChar(100), estado || null);
@@ -1488,12 +1506,13 @@ app.post('/api/odontograma/:id/diente/extraccion', async (req, res) => {
     const { nroHistoria, numeroDiente, usuario } = req.body;
     if (!odontogramaId || !numeroDiente) return res.status(400).json({ error: 'missing required fields' });
     const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
+    if (!historia) return res.status(400).json({ error: 'Nro_Historia requerido (no encontrado en Odontograma y no enviado en la solicitud)' });
     const trx = new sql.Transaction(pool);
     await trx.begin();
     try {
       const tr = trx.request();
       tr.input('OdontogramaId', sql.Int, odontogramaId);
-      tr.input('Nro_Historia', sql.NVarChar(50), historia || null);
+      tr.input('Nro_Historia', sql.NVarChar(50), historia);
       tr.input('NumeroDiente', sql.TinyInt, numeroDiente);
       tr.input('Usuario', sql.NVarChar(100), usuario || null);
       const upsert = `IF EXISTS (SELECT 1 FROM dbo.Diente WHERE OdontogramaId=@OdontogramaId AND NumeroDiente=@NumeroDiente)
@@ -1526,19 +1545,40 @@ app.get('/api/codigos', async (req, res) => {
     const r = pool.request();
     if (q) {
       r.input('q', sql.NVarChar(200), `%${q}%`);
+      // Buscar en servicios y diagnósticos en vez de CatalogoProcedimiento
       const result = await r.query(`
-        SELECT TOP 50 Codigo, Descripcion, Categoria, ColorDefault, Activo
-        FROM dbo.CatalogoProcedimiento
-        WHERE (Activo = 1 OR Activo IS NULL)
-          AND (Codigo LIKE @q OR Descripcion LIKE @q OR ISNULL(Categoria,'') LIKE @q)
-        ORDER BY Codigo`);
+        SELECT TOP 50 
+          F.Codigo AS Codigo, 
+          F.Nombre AS Descripcion,
+          NULL AS Categoria,
+          NULL AS ColorDefault,
+          1 AS Activo
+        FROM dbo.FactCatalogoServicios F
+        WHERE (F.Codigo LIKE @q OR F.Nombre LIKE @q)
+
+        UNION ALL
+
+        SELECT TOP 50 
+          D.CodigoCIE2004 AS Codigo,
+          D.Descripcion AS Descripcion,
+          NULL AS Categoria,
+          NULL AS ColorDefault,
+          1 AS Activo
+        FROM dbo.Diagnosticos D
+        WHERE (D.CodigoCIE2004 LIKE @q OR D.Descripcion LIKE @q)
+      `);
       return res.json(result.recordset);
     }
     const result = await r.query(`
-      SELECT TOP 100 Codigo, Descripcion, Categoria, ColorDefault, Activo
-      FROM dbo.CatalogoProcedimiento
-      WHERE (Activo = 1 OR Activo IS NULL)
-      ORDER BY Codigo`);
+      SELECT TOP 100 
+        F.Codigo AS Codigo, 
+        F.Nombre AS Descripcion,
+        NULL AS Categoria,
+        NULL AS ColorDefault,
+        1 AS Activo
+      FROM dbo.FactCatalogoServicios F
+      ORDER BY F.Codigo
+    `);
     res.json(result.recordset);
   } catch (err) {
     console.error(err);
@@ -1577,7 +1617,8 @@ app.post('/api/odontograma/:id/transposicion', async (req, res) => {
     const r = pool.request();
     r.input('odontogramaId', sql.Int, odontogramaId);
     const historia = nroHistoria || await getNroCuentaByOdontograma(odontogramaId);
-    r.input('nroHistoria', sql.NVarChar(50), historia || null);
+    if (!historia) return res.status(400).json({ error: 'Nro_Historia requerido (no encontrado en Odontograma y no enviado en la solicitud)' });
+    r.input('nroHistoria', sql.NVarChar(50), historia);
     r.input('from', sql.TinyInt, diente_from);
     r.input('to', sql.TinyInt, diente_to);
     r.input('color', sql.NVarChar(30), color || null);

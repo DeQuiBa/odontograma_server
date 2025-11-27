@@ -306,40 +306,9 @@
     ('EXTRACCION','Extraccion');
     GO
 
-    -- Catalogo de procedimientos / códigos (K021, Z465, etc.)
-    IF OBJECT_ID('dbo.CatalogoProcedimiento','U') IS NOT NULL DROP TABLE dbo.CatalogoProcedimiento;
-    CREATE TABLE dbo.CatalogoProcedimiento (
-        Codigo NVARCHAR(50) PRIMARY KEY,
-        Descripcion NVARCHAR(500) NOT NULL,
-        Categoria NVARCHAR(100) NULL,
-        ColorDefault NVARCHAR(20) NULL,
-        Activo BIT NOT NULL DEFAULT(1)
-    );
-    GO
 
-    -- Códigos de diagnósticos adicionales solicitados (AS05, A691, 8028, 807X, 8058, 8370..83705)
-    INSERT INTO dbo.CatalogoProcedimiento (Codigo, Descripcion) VALUES
-    ('AS05','Otras Formas de Sifilis Congénita Tardia, Sintomática'),
-    ('A691','Otras Infecciones de Vincent (Gingivitis de Vincent Gingivitis y Gingivoestomat)'),
-    ('8028','Herpes Zoster con otras Complicaciones'),
-    ('807X','Verrugas víricas'),
-    ('8058','Sarampión con otras Complicaciones'),
-    ('8370','Estomatitis Candidásica'),
-    ('83700','Estomatitis Candidásica Pseudomenbranosa Aguda'),
-    ('83701','Estomatitis Candidásica Eritematosa (Atrófica) Aguda'),
-    ('83702','Estomatitis Candidásica Hiperplásica Crónica'),
-    ('83703','Estomatitis Candidásica Eritematosa (Atrófica) Crónica'),
-    ('83704','Candidiasis Mucocutanea'),
-    ('83705','Granuloma Candidásico Bucal');
-    GO
-
-    -- Añadir FK desde DienteCodigo hacia CatalogoProcedimiento (si tabla existe)
-    IF OBJECT_ID('dbo.DienteCodigo','U') IS NOT NULL
-    BEGIN
-        ALTER TABLE dbo.DienteCodigo
-        ADD CONSTRAINT FK_DienteCodigo_Procedimiento FOREIGN KEY (Codigo) REFERENCES dbo.CatalogoProcedimiento(Codigo);
-    END
-    GO
+    -- Nota: eliminada la tabla CatalogoProcedimiento y su FK.
+    -- Los códigos ahora se consultan desde FactCatalogoServicios y Diagnosticos.
 
     -- Triggers simples para auditar cambios importantes (INSERTs)
     -- Trigger: log insert en DienteCodigo
